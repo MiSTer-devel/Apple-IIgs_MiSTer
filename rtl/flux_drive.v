@@ -95,6 +95,7 @@ module flux_drive (
     input  wire [7:0]  BRAM_DATA,       // Byte data from track buffer
 
     // WOZ v3 FLUX track support
+    input  wire [7:0]  OPTIMAL_BIT_TIMING, // WOZ INFO byte 39, 125ns units (0 = absent/standard)
     input  wire        IS_FLUX_TRACK,   // Current track uses flux timing data (not bitstream)
     input  wire [31:0] FLUX_DATA_SIZE,  // Size in bytes of flux timing data
     input  wire [31:0] FLUX_TOTAL_TICKS, // Sum of FLUX bytes for timing normalization
@@ -318,13 +319,52 @@ module flux_drive (
     //=========================================================================
 
     wire [9:0]  max_phase = IS_35_INCH ? MAX_PHASE_35 : MAX_PHASE_525;
-    wire [5:0]  bit_cell_base = IS_35_INCH ? BIT_CELL_35 : BIT_CELL_525;
-    wire [5:0]  bit_half_base = IS_35_INCH ? (BIT_CELL_35 >> 1) : (BIT_CELL_525 >> 1);
+    // ---- 5.25" bit cell from the WOZ INFO "optimal bit timing" byte ----------
+    // Scale RELATIVE to the calibrated BIT_CELL_525 rather than recomputing from
+    // absolute microseconds:
+    //
+    //     cell = BIT_CELL_525 * timing / 32  =  timing * 7 / 4
+    //
+    // BIT_CELL_525 (56) is deliberately NOT 4us at 14.318181MHz (that would be
+    // 57.2727). It is calibrated against ROTATION_CYCLES_14M so one 200ms
+    // revolution holds ~51k bits -- which is what Applesauce actually captures
+    // off real drives, since they run nearer 294 RPM than a nominal 300. The
+    // two constants are a matched pair; raising the cell alone makes the disk
+    // stream ~2% slow against its own data and breaks disks that work today.
+    // Scaling by the ratio keeps timing==32 bit-identical and moves only the
+    // non-standard disks (28/29/34 in the wild).
+    //
+    //   cell = timing*7/4 : 32 -> 56.00   28 -> 49.00   34 -> 59.50   29 -> 50.75
+    //   half = timing*7/8 : 32 -> 28.00   28 -> 24.50   34 -> 29.75   29 -> 25.375
+    //
+    // Clamped to 35: bit_timer is 6 bits and 36*7/4 = 63 overflows on the +1 carry.
+    wire [7:0]  eff_bit_timing = (OPTIMAL_BIT_TIMING == 8'd0) ? 8'd32 :
+                                 (OPTIMAL_BIT_TIMING > 8'd35) ? 8'd35 : OPTIMAL_BIT_TIMING;
+    wire [10:0] timing_x7      = {3'b000, eff_bit_timing} * 11'd7;   // max 245
+    wire [5:0]  cell525_base   = timing_x7[7:2];                     // timing*7/4
+    wire [9:0]  cell525_step   = {8'd0, timing_x7[1:0]} * 10'd250;   // .00/.25/.50/.75
+    wire [5:0]  half525_base   = timing_x7[8:3];                     // timing*7/8
+    wire [9:0]  half525_step   = {7'd0, timing_x7[2:0]} * 10'd125;   // eighths
+
+    wire [5:0]  bit_cell_base = IS_35_INCH ? BIT_CELL_35 : cell525_base;
+// Uncomment to trace the derived 5.25" bit cell as disks are mounted.
+//`define DEBUG_BITCELL
+`ifdef DEBUG_BITCELL
+    reg [7:0] dbg_last_timing = 8'hFF;
+    always @(posedge CLK_14M) if (!IS_35_INCH && OPTIMAL_BIT_TIMING != dbg_last_timing) begin
+        dbg_last_timing <= OPTIMAL_BIT_TIMING;
+        $display("BITCELL525: OPTIMAL_BIT_TIMING=%0d eff=%0d cell=%0d.%03d half=%0d.%03d",
+                 OPTIMAL_BIT_TIMING, eff_bit_timing, cell525_base, cell525_step, half525_base, half525_step);
+    end
+`endif
+    wire [5:0]  bit_half_base = IS_35_INCH ? (BIT_CELL_35 >> 1) : half525_base;
     // Fractional timing for 3.5" (2us bit cells @ 14.318MHz ~ 28.636 cycles).
     // Keep 3.5" at a constant 2us bit cell; rotation varies by track bit count.
-    wire        use_fractional_bitcell = IS_35_INCH;
-    wire [9:0]  bit_cell_step = use_fractional_bitcell ? 10'd636 : 10'd0;
-    wire [9:0]  bit_half_step = use_fractional_bitcell ? 10'd318 : 10'd0;
+    // For 5.25" the fraction comes from the timing scaling above and is zero
+    // for the standard timing==32, so standard disks keep integer 56 cells.
+    wire        use_fractional_bitcell = IS_35_INCH || (cell525_step != 10'd0);
+    wire [9:0]  bit_cell_step = IS_35_INCH ? 10'd636 : cell525_step;
+    wire [9:0]  bit_half_step = IS_35_INCH ? 10'd318 : half525_step;
     wire [5:0]  bit_cell_cycles = bit_cell_cycles_reg;
     // FLUX timing: Always use fixed 125ns tick rate (1.79 clocks at 14MHz).
     // WOZ FLUX format encodes real 125ns tick counts between transitions.
