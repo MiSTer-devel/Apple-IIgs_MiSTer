@@ -621,12 +621,18 @@ module woz_floppy_controller #(
 	            end
 	            prev_mounted <= img_mounted;
             
-            // Set per-side dirty flag on bit writes
+            // Set per-side dirty flag on bit writes.
+            // Only if that side actually has mapped blocks: an unmapped (TMAP==FF)
+            // track has nowhere to be written back to, and marking it dirty would
+            // flush the BRAM over whichever track's blocks were last loaded.
             if (bit_we) begin
-                if (IS_35_INCH && track_id[0])
-                    dirty_side1 <= 1;
-                else
-                    dirty_side0 <= 1;
+                if (IS_35_INCH && track_id[0]) begin
+                    if (trk_block_count_side1 != 16'd0)
+                        dirty_side1 <= 1;
+                end else begin
+                    if (trk_block_count_side0 != 16'd0)
+                        dirty_side0 <= 1;
+                end
 `ifdef DEBUG_VERBOSE
                 // Log dirty transitions (always) and first/periodic writes
                 if (!dirty_side0 && !(IS_35_INCH && track_id[0]))
@@ -968,18 +974,27 @@ module woz_floppy_controller #(
                                  trk_block_count <= 0;
                                  trk_bit_count <= 0;
                                  // Store empty track info to appropriate side
+                                 // Also invalidate this side's block pointers. They are
+                                 // only assigned on the successful-load path, so leaving
+                                 // them alone here keeps them aimed at the PREVIOUS track:
+                                 // a later write to this unmapped track would set dirty and
+                                 // flush BRAM over that track's blocks, corrupting the image.
                                  if (IS_35_INCH && pending_track_id[0]) begin
                                      current_track_id_side1 <= pending_track_id;
                                      bit_count_side1 <= 32'd0;
                                      is_flux_side1 <= 1'b0;
                                      flux_size_side1 <= 32'd0;
                                      flux_total_ticks_side1 <= 32'd0;
+                                     trk_start_block_side1 <= 16'd0;
+                                     trk_block_count_side1 <= 16'd0;
                                  end else begin
                                      current_track_id_side0 <= pending_track_id;
                                      bit_count_side0 <= 32'd0;
                                      is_flux_side0 <= 1'b0;
                                      flux_size_side0 <= 32'd0;
                                      flux_total_ticks_side0 <= 32'd0;
+                                     trk_start_block_side0 <= 16'd0;
+                                     trk_block_count_side0 <= 16'd0;
                                  end
                                  // Clear dirty for the side being loaded (empty track replaces it)
                                  if (IS_35_INCH && pending_track_id[0])

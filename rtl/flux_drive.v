@@ -220,6 +220,13 @@ module flux_drive (
     // Real analog hardware produces noise during gaps with no flux transitions.
     // Copy protection (e.g., Arkanoid IIgs) relies on this randomness.
     reg [15:0]  lfsr;
+    // Dedicated LFSR for weak/fake bits. Advanced once per bit cell and reseeded
+    // at track load and at every track wrap, so the noise pattern is a function
+    // of angular position and REPEATS on each revolution. The free-running `lfsr`
+    // steps every 14MHz clock, so its value depends on absolute time: protections
+    // that read a track twice and compare see uncorrelated noise instead of the
+    // stable-but-fuzzy pattern real media produces.
+    reg [15:0]  weak_lfsr;
 
     // MC3470 head window for bitstream mode weak-bit emulation (WOZ 2.1 spec).
     // The MC3470 read amplifier has ~1 bit-cell latency through its filter chain.
@@ -1207,6 +1214,7 @@ module flux_drive (
             next_byte_valid <= 1'b0;
 
             lfsr <= 16'hACE1;               // Non-zero seed for LFSR
+            weak_lfsr <= 16'hACE1;          // Same seed each revolution -> repeatable noise
             head_window <= 4'hF;            // Init non-zero (not in fake area)
             zero_run_count <= 8'd0;
             weak_bit_active <= 1'b0;
@@ -1625,10 +1633,22 @@ module flux_drive (
                         // (e.g. Apple-Oids / Chip Out Woz-a-Day) spin forever waiting
                         // for bit 7 of $C0EC. Synthesize noise from the LFSR at a
                         // ~31% transition rate — same knob the weak-bit path uses.
+                        // Step the weak LFSR only when a fake bit is actually
+                        // CONSUMED, mirroring clem_drive.c's random_bit_index, which
+                        // advances solely on CLEM_IWM_FLAG_READ_DATA_FAKE and is never
+                        // reset. Stepping it free-running at 14MHz (as the shared `lfsr`
+                        // does) ties the value to absolute time, so consecutive fake bits
+                        // are uncorrelated noise rather than a reproducible sequence.
+                        if (TRACK_LOADED && drive_ready && !WRITE_MODE &&
+                            ((TRACK_BIT_COUNT > 0 && weak_bit_active && !current_bit)
+                             || (TRACK_BIT_COUNT == 0))) begin
+                            weak_lfsr <= {weak_lfsr[14:0],
+                                          weak_lfsr[15] ^ weak_lfsr[13] ^ weak_lfsr[12] ^ weak_lfsr[10]};
+                        end
                         if (TRACK_LOADED && drive_ready && !WRITE_MODE &&
                             ((TRACK_BIT_COUNT > 0 &&
-                              (current_bit || (weak_bit_active && !current_bit && lfsr[3:0] < 4'd5)))
-                             || (TRACK_BIT_COUNT == 0 && lfsr[3:0] < 4'd5))) begin
+                              (current_bit || (weak_bit_active && !current_bit && weak_lfsr[3:0] < 4'd5)))
+                             || (TRACK_BIT_COUNT == 0 && weak_lfsr[3:0] < 4'd5))) begin
                             FLUX_TRANSITION <= 1'b1;
 `ifdef DEBUG_VERBOSE
                             if (flux_count_debug < 50) begin
