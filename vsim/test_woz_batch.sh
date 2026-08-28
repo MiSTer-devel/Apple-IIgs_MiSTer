@@ -203,13 +203,13 @@ run_one_disk() {
   local start end elapsed rc png_size hash status
   start=$(date +%s)
   if command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$TIMEOUT" ./obj_dir/Vemu --quiet --no-cpu-log \
+    gtimeout "$TIMEOUT" ./obj_dir/Vemu --quiet --no-cpu-log --fixed-time \
         --woz "$woz" --stop-at-frame "$FRAMES" --screenshot "$FRAMES" \
         --screenshot-name "$shot" \
         >/dev/null 2>&1
     rc=$?
   else
-    ./obj_dir/Vemu --quiet --no-cpu-log \
+    ./obj_dir/Vemu --quiet --no-cpu-log --fixed-time \
         --woz "$woz" --stop-at-frame "$FRAMES" --screenshot "$FRAMES" \
         --screenshot-name "$shot" \
         >/dev/null 2>&1 &
