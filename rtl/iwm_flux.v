@@ -95,7 +95,6 @@ module iwm_flux (
 
     // Drive type selection
     input  wire        IS_35_INCH,      // 1 = 3.5" drive, 0 = 5.25" drive
-    input  wire [7:0]  OPTIMAL_BIT_TIMING, // WOZ INFO byte 39 for the 5.25" disk (0 = standard)
 
     // Per-drive status sensing (computed by flux_drive, muxed by iwm_woz)
     input  wire        SENSE_BIT,       // Status sense from selected drive
@@ -265,35 +264,10 @@ module iwm_flux (
     // the byte is latched. No windowing, no edge detection.
     // The window-based decoder introduces byte boundary alignment differences
     // that break timing-sensitive copy protection (nibble counting).
-    reg [5:0]  sr525_timer;          // Countdown: one bit cell (56 clocks at timing==32)
-    reg [9:0]  sr525_frac;           // Fractional remainder, thousandths of a cycle
+    reg [5:0]  sr525_timer;          // Countdown: 56 clocks per bit cell
     reg        sr525_flux_seen;      // Any flux transition during this bit cell?
     wire       sr525_active = !IS_35_INCH && !m_rw_mode && motor_decode_ok;
-    // Bit cell scaled from the WOZ INFO "optimal bit timing" byte, matching
-    // flux_drive.v exactly (cell = timing*7/4, i.e. 56 at the standard timing
-    // 32). The drive and this shift register MUST derive the cell the same way;
-    // if they disagree the decode window walks off the emitted flux within a
-    // few dozen bits. timing==32 yields integer 56 with zero fraction, so
-    // standard disks behave exactly as before.
-    wire [7:0]  sr_eff_timing = (OPTIMAL_BIT_TIMING == 8'd0) ? 8'd32 :
-                                (OPTIMAL_BIT_TIMING > 8'd35) ? 8'd35 : OPTIMAL_BIT_TIMING;
-    wire [10:0] sr_timing_x7  = {3'b000, sr_eff_timing} * 11'd7;
-    wire [5:0]  SR525_BIT_CELL      = sr_timing_x7[7:2];
-    wire [9:0]  SR525_BIT_CELL_STEP = {8'd0, sr_timing_x7[1:0]} * 10'd250;
-
-    task automatic load_sr525_timer;
-        reg [9:0] tmp;
-        begin
-            tmp = sr525_frac + SR525_BIT_CELL_STEP;
-            if (tmp >= 10'd1000) begin
-                sr525_timer <= SR525_BIT_CELL + 6'd1;
-                sr525_frac  <= tmp - 10'd1000;
-            end else begin
-                sr525_timer <= SR525_BIT_CELL;
-                sr525_frac  <= tmp;
-            end
-        end
-    endtask
+    localparam [5:0] SR525_BIT_CELL = 6'd56;  // 4µs at 14MHz
 
     // Track wrap detection: reset fractional accumulators when disk completes a rotation
     // to prevent accumulated drift from causing byte framing misalignment.
@@ -581,7 +555,6 @@ module iwm_flux (
             clear_rsh_pending   <= 1'b0;
             latch_hold_cnt <= 4'd0;
             sr525_timer     <= SR525_BIT_CELL;
-            sr525_frac      <= 10'd0;
             sr525_flux_seen <= 1'b0;
             sync_run_count <= 4'd0;
             sync_resync_done <= 1'b0;
@@ -684,7 +657,6 @@ module iwm_flux (
                 m_rw_mode <= 1'b0;
                 rw_state <= S_IDLE;
                 sr525_timer <= SR525_BIT_CELL;
-                sr525_frac  <= 10'd0;
                 sr525_flux_seen <= 1'b0;
 `ifdef DEBUG_VERBOSE
                 $display("IWM_FLUX: Entering READ mode, m_data <= 0x00");
@@ -881,7 +853,7 @@ module iwm_flux (
                         shifted_rsh = {m_rsh[6:0], (sr525_flux_seen || flux_edge) ? 1'b1 : 1'b0};
                         m_rsh <= shifted_rsh;
                         sr525_flux_seen <= 1'b0;
-                        load_sr525_timer();
+                        sr525_timer <= SR525_BIT_CELL;
 
                         if (shifted_rsh[7]) begin
                             // Byte complete - update data register and prologue tracking
@@ -1754,7 +1726,6 @@ module iwm_flux (
                 half_window_frac <= 10'd0;
                 flux_seen <= 1'b0;
                 sr525_timer <= SR525_BIT_CELL;
-                sr525_frac  <= 10'd0;
                 sr525_flux_seen <= 1'b0;
                 async_update_pending <= 1'b0;
                 latch_hold_cnt <= 4'd0;
