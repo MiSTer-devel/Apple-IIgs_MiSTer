@@ -200,13 +200,37 @@ would have broken the very disk that certifies weak-bit handling.
 
 ## Confirmed our bugs (GSSquared v0.11 boots them, we do not)
 
-| Disk | What the readme says it tests |
-|------|-------------------------------|
-| Commando | basic copy protection |
-| Wings of Fury | offset data streams (mid-nibble latch reset via `LDA $C08D,x`) |
-| Hard Hat Mack | extra-wide track (2 tracks wide) |
-| First Math Adventures | data-latch lifespan: a read must NOT clear the latch |
-| Planetfall | basic copy protection (boots in GSSquared on Apple II+, `-p 1`) |
+| Disk | What the readme says it tests | Status |
+|------|-------------------------------|--------|
+| Commando | basic copy protection | **FIXED** `458dd35` |
+| Wings of Fury | offset data streams (mid-nibble latch reset via `LDA $C08D,x`) | **FIXED** `458dd35` |
+| Hard Hat Mack | extra-wide track (2 tracks wide) | open |
+| First Math Adventures | data-latch lifespan: a read must NOT clear the latch | open |
+| Planetfall | basic copy protection (boots in GSSquared on Apple II+, `-p 1`) | open |
+
+### Q6H reset ($C08D) -- fixed, with one known regression
+
+`458dd35` adds the missing Q6 rising-edge reset of the read shift register.
+Suite 13 -> 15. Costs "The Halley Project" (BOOTED -> BLANK) in the corpus.
+
+Three refinements failed to recover it: gating on read mode (`!SW_Q7`),
+preserving the pending flux edge, and both. Both Halley Project and Wings of
+Fury fire **exactly 3 Q6 resets over 400 frames**, so the trigger is not
+over-firing; the remaining error is *where in the bit cell* the reset lands.
+That is the thread to pull next, and it needs LSS cycle analysis rather than
+more experiments.
+
+### Hard Hat Mack: the extra-wide track is visible in TMAP
+
+Quarter-track -> TRKS entry, first twelve tracks:
+
+    DOS 3.3 (normal):      T  T  --  T+1     half-track slot is 0xFF
+    Hard Hat Mack (wide):  T  T   T  T+1     half-track slot maps to T
+
+Each entry claims 4 quarter-positions instead of 3. This *should* already work
+-- the lookup is just `TMAP[quarter]`, and the -2 quarter-track offset in
+`Apple-IIgs.sv` still lands a half-track head on `4T+2` -> entry `T`. So the
+failure is somewhere other than the TMAP lookup.
 
 Note Wings of Fury and Stickybear Town Builder test the *same* behaviour and we
 pass one and fail the other -- a tight pair for isolating the bug.
