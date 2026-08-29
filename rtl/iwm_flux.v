@@ -183,6 +183,14 @@ module iwm_flux (
     reg [3:0]  latch_hold_cnt;       // Latched read hold in bit-times (mode bit0)
     wire       latch_mode = SW_MODE[0];
     wire       latch_hold_active = (latch_hold_cnt != 4'd0);
+    // Q6 rising edge ($C08D). Switching Q6 high takes the LSS out of read-data
+    // mode and resets its shift register; going back to Q6L then resumes
+    // accumulating from empty. Programs use this to deliberately re-frame the
+    // incoming stream part-way through a nibble, so the bits that follow are
+    // read offset from the normal nibble starts (see WozTestImages/readme.txt,
+    // "READING OFFSET DATA STREAMS" -- Wings of Fury, Stickybear Town Builder).
+    reg        prev_sw_q6;
+    wire       q6_rising = SW_Q6 && !prev_sw_q6;
 
     // MAME async behavior: In async mode, completed bytes remain in m_data until overwritten by
     // the next completed byte. After the CPU performs an IWM register access while a valid byte
@@ -558,6 +566,7 @@ module iwm_flux (
             half_window_frac <= 10'd0;
             rd_in_progress <= 1'b0;
             rd_was_data_reg <= 1'b0;
+            prev_sw_q6 <= 1'b0;
             rd_data_latched <= 8'h00;
             rd_from_completion <= 1'b0;
             cbus_handshake_ctr <= 2'd0;
@@ -661,6 +670,16 @@ module iwm_flux (
             async_tick_14m <= async_tick_14m + 1'd1;
             // Approximate MAME's m_last_sync using bit-cell boundaries.
             if (shift_edge0_now || shift_edge1_now) begin
+            end
+            prev_sw_q6 <= SW_Q6;
+            // Read mode only. With Q7 high the shift register is the WRITE
+            // register, and clearing it there corrupts writes; Q6 is also
+            // toggled for status/mode reads that must not re-frame the stream.
+            if (q6_rising && !IS_35_INCH && !SW_Q7) begin
+                // Re-frame the stream: drop whatever partial nibble is in flight.
+                // Keep sr525_flux_seen: a transition already detected in the
+                // current bit cell is real data and still belongs to the next bit.
+                m_rsh <= 8'h00;
             end
             if (clear_rsh_pending) begin
                 clear_rsh_pending <= 1'b0;
