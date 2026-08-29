@@ -146,3 +146,81 @@ nothing writes, seek glitches show up in gameplay, and track-arc timing is
 invisible to a screenshot. Using the corpus as their pass criterion produces a
 flat line whether a fix works or not, which reads as "no regression" and is
 worse than no test.
+
+---
+
+# WOZ Test Images benchmark
+
+`vsim/WozTestImages/` holds John K. Morris's official WOZ Test Images (v1.4,
+2021). Each image isolates one floppy behaviour and `readme.txt` states the
+expected outcome, so a failure is a named diagnosis rather than "did not boot".
+Morris: *"They are all verified as good images. You can trust them. If they
+don't work for some reason, then it is something about your implementation."*
+
+Run with `./run_woztest_suite.sh [outdir] [frames] [jobs]` (1500 frames is
+enough; 400 is not).
+
+## Our score: 13 of 26
+
+**Passing** — DOS 3.3 System Master, The Apple at Play, Bouncing Kamungas,
+Rescue Raiders, Sammy Lightfoot, Dino Eggs, Crisis Mountain, Miner 2049er II,
+Blazing Paddles, Take 1, The Bilestoad, The Print Shop Companion,
+Stickybear Town Builder.
+
+Several of those are the hard cases: Blazing Paddles and Take 1 are the
+cross-track synchronisation tests, The Bilestoad is half-track addressing, and
+**The Print Shop Companion is the MC3470 fake-bit test** -- which independently
+validates leaving the weak-bit threshold at 7. The TODO's proposed 7->4 change
+would have broken the very disk that certifies weak-bit handling.
+
+## Confirmed our bugs (GSSquared v0.11 boots them, we do not)
+
+| Disk | What the readme says it tests |
+|------|-------------------------------|
+| Commando | basic copy protection |
+| Wings of Fury | offset data streams (mid-nibble latch reset via `LDA $C08D,x`) |
+| Hard Hat Mack | extra-wide track (2 tracks wide) |
+| First Math Adventures | data-latch lifespan: a read must NOT clear the latch |
+
+Note Wings of Fury and Stickybear Town Builder test the *same* behaviour and we
+pass one and fail the other -- a tight pair for isolating the bug.
+
+## Not reproduced as our bugs
+
+GSSquared also fails Stargate, Planetfall, Border Zone side A, DOS 3.2 System
+Master (13-sector, explicitly optional) and the WOZ 2.1 ProDOS FLUX image under
+`-p 2`. Treat the last two as provisional: platform choice may be wrong.
+
+## Lead: the data latch is cleared on read
+
+`iwm_flux.v` gates the latch on `m_data_read`:
+
+    wire data_ready = m_data[7] && (!m_data_read || smartport_mode_local);
+    wire [7:0] effective_data = data_ready ? m_data : 8'h00;
+
+so a second read of the same byte returns 00. Real hardware holds the byte until
+the next one shifts in; bit 7 clears because the shift register restarts, not
+because the CPU read it. That is exactly what First Math Adventures checks.
+
+The gate is load-bearing -- its comment says it "prevents duplicate reads in the
+ROM's BPL polling loop that broke D5 AA 96 prologues" -- so removing it needs the
+correct LSS behaviour (clear bit 7 when a new byte starts accumulating) rather
+than a straight deletion. Verify against First Math Adventures and Wings of Fury,
+and re-check the whole 26-image suite for prologue regressions.
+
+## Benchmarking against GSSquared
+
+`/home/alans/mister/gssquared-bench` is upstream v0.11.0-7 with the two
+vsim-comparison commits from `alanswx/gssquared` cherry-picked on top (branch
+`bench`). v0.11 matters: it carries "IWM / floppy -- correct drive-enable model,
+empty-drive sense, and LSS clocking", which post-dates the local fork.
+
+    cd /home/alans/mister/gssquared-bench
+    cmake --install build          # REQUIRED: build/GSSquared aborts on a missing font
+    DISPLAY=:0 LD_LIBRARY_PATH="$PWD/build/lib" ./build/bin/GSSquared \
+        -p 2 -d s6d1=<image.woz> --screenshot 1200 --stop-at-frame 1200 \
+        --screenshot-name out
+
+Platforms: 0=II, 1=II+, 2=IIe, 3=IIe Enh, 4=IIe 65816, 5=IIgs. Compare screens
+visually -- PNG byte size differs between the two emulators and is only a rough
+proxy within one of them.
