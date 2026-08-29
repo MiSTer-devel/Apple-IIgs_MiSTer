@@ -228,6 +228,7 @@ wire        WOZ_TRACK1_IS_FLUX;   // Track data is flux timing (not bitstream)
 wire [31:0] WOZ_TRACK1_FLUX_SIZE; // Size in bytes of flux data (when IS_FLUX)
 wire [31:0] WOZ_TRACK1_FLUX_TOTAL_TICKS; // Sum of FLUX bytes for timing normalization
 wire        WOZ_TRACK1_WP;        // Write-protected flag from WOZ INFO chunk
+wire [7:0] WOZ_525_BIT_TIMING;   // WOZ INFO byte 39 (optimal bit timing) for the 5.25" disk
 
 // Write interfaces from IWM back to WOZ controllers
 wire [7:0]  WOZ_TRACK3_BIT_DATA_IN;  // Write byte for 3.5" BRAM
@@ -341,6 +342,7 @@ iigs  iigs(
     .WOZ_TRACK1_BIT_COUNT(WOZ_TRACK1_BIT_COUNT),
     .WOZ_TRACK1_LOAD_COMPLETE(woz_ctrl_525_track_load_complete),
     .WOZ_TRACK1_IS_FLUX(WOZ_TRACK1_IS_FLUX),
+    .WOZ_525_BIT_TIMING(WOZ_525_BIT_TIMING),
     .WOZ_TRACK1_FLUX_SIZE(WOZ_TRACK1_FLUX_SIZE),
     .WOZ_TRACK1_FLUX_TOTAL_TICKS(WOZ_TRACK1_FLUX_TOTAL_TICKS),
     .WOZ_TRACK1_WP(WOZ_TRACK1_WP),
@@ -932,6 +934,7 @@ woz_floppy_controller #(
 
     // Write-protect flag from WOZ INFO chunk
     .disk_write_protected(WOZ_TRACK1_WP),
+    .optimal_bit_timing(WOZ_525_BIT_TIMING),
     .dbg_load_sum(),
     .dbg_load_bytes(),
     .dbg_load_blocks()

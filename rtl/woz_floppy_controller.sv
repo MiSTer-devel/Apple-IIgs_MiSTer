@@ -78,6 +78,11 @@ module woz_floppy_controller #(
     // Some copy-protection (e.g. Wizardry) refuses to boot unless the disk reports WP=1.
     output wire       disk_write_protected,
 
+    // Optimal bit timing from WOZ INFO chunk (byte offset 39), in 125ns units.
+    // 32 = the 4us standard for 5.25"; a handful of titles master at 28/29/34.
+    // 0 when absent (WOZ1 has no such field) -- consumers treat 0 as "standard".
+    output wire [7:0] optimal_bit_timing,
+
     // DEBUG: running sum of all sd_buff bytes received during track loads
     // (S_READ_TRACK). Reset at each load start. Compared between sim (golden)
     // and FPGA overlay to detect HPS data-delivery corruption.
@@ -329,6 +334,7 @@ module woz_floppy_controller #(
     // Disk type mismatch: WOZ INFO disk_type 1=5.25", 2=3.5"
     assign disk_type_mismatch = woz_valid && ((IS_35_INCH && info_disk_type == 8'd1) || (!IS_35_INCH && info_disk_type == 8'd2));
     assign disk_write_protected = woz_valid && (info_wp != 8'd0);
+    assign optimal_bit_timing   = woz_valid ? info_bit_timing : 8'd0;
 
     // WOZ Parsing
     reg [10:0] meta_read_addr;

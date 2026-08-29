@@ -219,6 +219,7 @@ module iigs
    input  [31:0]      WOZ_TRACK1_BIT_COUNT, // Total bits in track
    input              WOZ_TRACK1_LOAD_COMPLETE, // Pulses when 5.25" track load finishes
    input              WOZ_TRACK1_IS_FLUX,       // Track data is flux timing (not bitstream)
+   input      [7:0]   WOZ_525_BIT_TIMING,       // WOZ INFO byte 39 for the 5.25" disk (0 = standard)
    input  [31:0]      WOZ_TRACK1_FLUX_SIZE,     // Size in bytes of flux data
    input  [31:0]      WOZ_TRACK1_FLUX_TOTAL_TICKS, // Sum of FLUX bytes for timing normalization
    input              WOZ_TRACK1_WP,            // Write-protected flag from WOZ INFO chunk
@@ -2424,6 +2425,7 @@ wire ready_out;
       .WOZ_TRACK1_BIT_COUNT(WOZ_TRACK1_BIT_COUNT),
       .WOZ_TRACK1_LOAD_COMPLETE(WOZ_TRACK1_LOAD_COMPLETE),
       .WOZ_TRACK1_IS_FLUX(WOZ_TRACK1_IS_FLUX),
+      .WOZ_525_BIT_TIMING(WOZ_525_BIT_TIMING),
       .WOZ_TRACK1_FLUX_SIZE(WOZ_TRACK1_FLUX_SIZE),
       .WOZ_TRACK1_FLUX_TOTAL_TICKS(WOZ_TRACK1_FLUX_TOTAL_TICKS),
       .WOZ_TRACK1_WP(WOZ_TRACK1_WP),

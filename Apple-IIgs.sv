@@ -409,6 +409,7 @@ iigs iigs (
 	.WOZ_TRACK1_BIT_COUNT(WOZ_TRACK1_BIT_COUNT),
 	.WOZ_TRACK1_LOAD_COMPLETE(WOZ_TRACK1_LOAD_COMPLETE),
 	.WOZ_TRACK1_IS_FLUX(WOZ_TRACK1_IS_FLUX),
+	.WOZ_525_BIT_TIMING(WOZ_525_BIT_TIMING),
 	.WOZ_TRACK1_FLUX_SIZE(WOZ_TRACK1_FLUX_SIZE),
 	.WOZ_TRACK1_FLUX_TOTAL_TICKS(WOZ_TRACK1_FLUX_TOTAL_TICKS),
 	.WOZ_TRACK1_WP(WOZ_TRACK1_WP),
@@ -944,6 +945,7 @@ wire        WOZ_TRACK1_IS_FLUX;
 wire [31:0] WOZ_TRACK1_FLUX_SIZE;
 wire [31:0] WOZ_TRACK1_FLUX_TOTAL_TICKS;
 wire        WOZ_TRACK1_WP;
+wire [7:0] WOZ_525_BIT_TIMING;   // WOZ INFO byte 39 (optimal bit timing) for the 5.25" disk
 wire [7:0]  WOZ_TRACK1_BIT_DATA_IN;  // Write byte from IWM to BRAM
 wire        WOZ_TRACK1_BIT_WE;       // Write enable from IWM
 wire [15:0] WOZ_TRACK1_BIT_WR_ADDR;  // Write address (latched)
@@ -1154,6 +1156,7 @@ woz_floppy_controller #(
 
 	// Write-protect flag from WOZ INFO chunk
 	.disk_write_protected(WOZ_TRACK1_WP),
+	.optimal_bit_timing(WOZ_525_BIT_TIMING),
 	.dbg_load_sum(),
 	.dbg_load_bytes(),
 	.dbg_load_blocks()
