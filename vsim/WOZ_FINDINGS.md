@@ -36,33 +36,58 @@ disks) boots 48.0%.
 - **Treat any TIMEOUT cluster as suspect.** A contiguous alphabetical block of
   15 timeouts turned out to be one starved wave of workers, not a regression.
 
-## P0a -- bit cell timing: NOT A DEFECT
+## P0a -- bit cell timing: PARTLY REAL (corrected)
 
-The TODO says `BIT_CELL_525 = 56` is wrong because 4 us at 14.318181 MHz is
-57.2727 cycles, a "2.27% systematic error on every disk". Both the literal fix
-and a scaled variant were tried and both are wrong.
+Two separate claims here; the first is wrong and the second is right.
 
-- Raising the cell to 57.2727 regressed **35 of 202 disks, 0 improvements**.
-- `BIT_CELL_525` is calibrated against `ROTATION_CYCLES_14M`, not derived from
-  microseconds. The corpus median track holds **50,985 bits**, which against
-  the 200 ms rotation constant implies **56.17 cycles/bit**. Real drives run
-  nearer 294 RPM than 300, so Applesauce captures ~51k bits/track, not the
-  theoretical 50k. The two constants are a matched pair.
-- Scaling the cell by INFO byte 39 (`optimal_bit_timing`) is also wrong. The 22
-  non-standard-timing disks hold 49.9k-53.4k bits/track -- the *same* range as
-  ordinary disks -- so their implied cell stays near 56 throughout. Plain 56 is
-  closer than the scaled value for **22 of 22 disks, zero exceptions**. That
-  work was committed as `dc4daf6` and reverted in `051cd6c`.
+**Raising BIT_CELL_525 from 56 to 57.2727 is wrong.** It regressed **35 of 202
+disks with 0 improvements**. The constant is calibrated against
+`ROTATION_CYCLES_14M`, not derived from microseconds: the corpus median track
+holds 50,985 bits, which against the 200 ms rotation constant implies 56.17
+cycles/bit. Real drives run nearer 294 RPM than 300, so Applesauce captures
+~51k bits/track rather than the theoretical 50k. The two constants are a
+matched pair; raising one alone makes the disk stream ~2% slow against its own
+data.
 
-Also note `iwm_flux.v` carries its **own** copy of the cell constant
+Note also that `iwm_flux.v` carries its **own** copy of the cell constant
 (`SR525_BIT_CELL`, `base_full_window`). Drive and IWM are both "wrong" by the
 same amount and therefore stay in lockstep; changing either alone desynchronises
 them within a few dozen bits.
 
-The 22 disks do not boot, but that is not a timing fault. The 11 timing-28
-images are Infocom **side B data disks** -- "Check startup device!" is the
-correct response to a volume with no boot block, so booting them was never a
-valid test. Only ~12 of the 22 are boot-testable at all.
+**Honouring INFO byte 39 (`optimal_bit_timing`) is right**, and is implemented in
+`dc4daf6` as a ratio against the calibrated constant
+(`cell = BIT_CELL_525 * timing / 32 = timing * 7/4`), so timing 32 yields exactly
+56 and the 2,572 standard disks are bit-identical by construction.
+
+I briefly reverted that in `051cd6c` after observing that the 22 non-standard
+disks hold ~50k bits/track like everything else, concluding their implied cell
+stays near 56. **That reasoning was wrong** and the revert was undone in
+`d3ab554`. It assumed every disk takes exactly 200 ms per revolution, and these
+are precisely the disks that do not. From `WozTestImages/readme.txt`:
+
+    They would slow down or speed up the drives before writing them just to
+    mess with bit copiers [...] "Border Zone" [...] has a very timing dependent
+    disk reader that will tend to lose sync with the disk if the bits are coming
+    in at 4 microseconds [...] Using a 4 microsecond bit timing, this little test
+    can run almost a minute and a half. If you use the 3.5 microsecond timing as
+    indicated in the WOZ file, then the test tends to take around 17 seconds.
+
+A disk written on a deliberately fast drive holds a normal bit count that must be
+clocked out faster, so ~50k bits is expected rather than evidence against
+scaling. The official Border Zone test image matches our corpus copy (50,346
+bits at timing 28).
+
+That quote also explains why the 202-disk verification showed 0 improvements and
+0 regressions, which I first misread as the fix being inert: honouring the timing
+changes how fast a timing-sensitive reader syncs, not whether the disk boots.
+**A boot-screenshot harness cannot measure this fix at all.** Border Zone's
+stopwatch test (90 s versus 17 s to reach the `>` prompt) is the real check and
+needs scripted keystrokes across a disk swap.
+
+The 22 disks still do not boot, but that is a separate matter: the 11 timing-28
+images are Infocom **side B data disks**, and "Check startup device!" is the
+correct response to a volume with no boot block. Only ~12 of the 22 are
+boot-testable at all.
 
 ## P0b -- data separator: REAL, PARKED
 
