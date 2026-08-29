@@ -206,15 +206,21 @@ would have broken the very disk that certifies weak-bit handling.
 | Wings of Fury | offset data streams (mid-nibble latch reset via `LDA $C08D,x`) |
 | Hard Hat Mack | extra-wide track (2 tracks wide) |
 | First Math Adventures | data-latch lifespan: a read must NOT clear the latch |
+| Planetfall | basic copy protection (boots in GSSquared on Apple II+, `-p 1`) |
 
 Note Wings of Fury and Stickybear Town Builder test the *same* behaviour and we
 pass one and fail the other -- a tight pair for isolating the bug.
 
 ## Not reproduced as our bugs
 
-GSSquared also fails Stargate, Planetfall, Border Zone side A, DOS 3.2 System
-Master (13-sector, explicitly optional) and the WOZ 2.1 ProDOS FLUX image under
-`-p 2`. Treat the last two as provisional: platform choice may be wrong.
+GSSquared also fails Stargate, Border Zone side A, DOS 3.2 System Master
+(13-sector, explicitly optional; it shows garbage even on `-p 0`) and the WOZ 2.1
+ProDOS FLUX image.
+
+Treat "not confirmed" as provisional, not exonerating: **platform choice
+changes the verdict.** Planetfall looked like a shared failure on `-p 2` (IIe)
+and boots cleanly on `-p 1` (II+), which moved it into the confirmed-ours list.
+Stargate and the FLUX image may do the same under a configuration not yet tried.
 
 ## Lead: the data latch is cleared on read
 
@@ -227,11 +233,26 @@ so a second read of the same byte returns 00. Real hardware holds the byte until
 the next one shifts in; bit 7 clears because the shift register restarts, not
 because the CPU read it. That is exactly what First Math Adventures checks.
 
-The gate is load-bearing -- its comment says it "prevents duplicate reads in the
-ROM's BPL polling loop that broke D5 AA 96 prologues" -- so removing it needs the
-correct LSS behaviour (clear bit 7 when a new byte starts accumulating) rather
-than a straight deletion. Verify against First Math Adventures and Wings of Fury,
-and re-check the whole 26-image suite for prologue regressions.
+The gate is load-bearing. **Tested: removing it outright breaks everything.**
+With `data_ready = m_data[7]`, all 26 test images drop to TEXT_ONLY -- including
+DOS 3.3 System Master, the simplest disk in the set. Nothing boots at all. (Three
+images move BLANK -> TEXT_ONLY, but that is not an improvement: it just means they
+now fail at the ROM splash instead of failing later.) The comment on the gate,
+"prevents duplicate reads in the ROM's BPL polling loop that broke D5 AA 96
+prologues", is exactly right.
+
+So the fix is not a deletion. Real hardware holds a completed byte only briefly:
+the LSS sits in hold states for roughly two bit-times, then clears and resumes
+accumulating, so bit 7 falls on its own without the CPU having read anything.
+Our `latch_hold_cnt` models a hold (8 bit-times, mode bit 0) but line ~1921
+cancels it on read, and `m_data_read` then zeroes the value.
+
+A correct fix has to make bit 7 fall on a *timer*, not on a read -- while still
+falling fast enough that the ROM's polling loop (roughly 2.5-5 bit-times between
+reads at 1 MHz) cannot see the same byte twice. That window is tight and is
+probably why the read-clears shortcut was taken. Worth doing against the IWM/LSS
+spec rather than by experiment; verify with First Math Adventures and Wings of
+Fury, and re-run the full 26-image suite for prologue regressions.
 
 ## Benchmarking against GSSquared
 
