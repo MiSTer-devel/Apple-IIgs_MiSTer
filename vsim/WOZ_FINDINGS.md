@@ -198,15 +198,34 @@ cross-track synchronisation tests, The Bilestoad is half-track addressing, and
 validates leaving the weak-bit threshold at 7. The TODO's proposed 7->4 change
 would have broken the very disk that certifies weak-bit handling.
 
-## Confirmed our bugs (GSSquared v0.11 boots them, we do not)
+## Confirmed our bugs -- compare on the SAME platform
 
-| Disk | What the readme says it tests | Status |
-|------|-------------------------------|--------|
-| Commando | basic copy protection | **FIXED** `458dd35` |
-| Wings of Fury | offset data streams (mid-nibble latch reset via `LDA $C08D,x`) | **FIXED** `458dd35` |
-| Hard Hat Mack | extra-wide track (2 tracks wide) | open |
-| First Math Adventures | data-latch lifespan: a read must NOT clear the latch | open |
-| Planetfall | basic copy protection (boots in GSSquared on Apple II+, `-p 1`) | open |
+**Run the reference on `-p 5` (IIgs), not `-p 2` (IIe).** Our core is a IIgs and
+several of these are Apple II-era disks. Comparing against IIe misclassifies
+disks that simply do not run on a IIgs as our bugs. Platform choice demonstrably
+flips verdicts in both directions: Planetfall fails on IIe and boots on II+ and
+on IIgs; Hard Hat Mack boots on IIe and fails on IIgs.
+
+Verified with DOS 3.3 System Master as a control (boots on `-p 5`, 2777 bytes).
+
+| Disk | GSSquared IIgs | Us | Verdict |
+|------|----------------|-----|---------|
+| Commando | boots | boots | **FIXED** `458dd35` |
+| Wings of Fury | boots | boots | **FIXED** `458dd35` |
+| First Math Adventures | boots ("Do you want sound?") | TEXT_ONLY | **our bug** |
+| Planetfall | boots ("80-COLUMN DISPLAY?") | BLANK | **our bug** |
+| Hard Hat Mack | **fails, "Check startup device!"** | TEXT_ONLY | NOT ours -- same failure |
+| Stargate | fails | BLANK | NOT ours |
+
+Hard Hat Mack was previously listed as our bug on the strength of an IIe run.
+On IIgs a known-good emulator produces the *identical* "Check startup device!"
+screen we do, so the extra-wide-track test cannot be exercised on this machine
+at all. Consistent with its runtime behaviour here: it performs exactly one seek
+(to track 0) and stops, never reaching the wide track. Its track 0 is ordinary
+16-sector format -- 11 `D5 AA 96` address and 11 `D5 AA AD` data prologues,
+structurally identical to DOS 3.3 -- so nothing about the image explains a
+IIgs-specific failure; it is likely a machine-compatibility issue rather than a
+floppy one.
 
 ### Q6H reset ($C08D) -- fixed, with one known regression
 
@@ -220,7 +239,7 @@ over-firing; the remaining error is *where in the bit cell* the reset lands.
 That is the thread to pull next, and it needs LSS cycle analysis rather than
 more experiments.
 
-### Hard Hat Mack: the extra-wide track is visible in TMAP
+### Hard Hat Mack: not a floppy bug (see table above)
 
 Quarter-track -> TRKS entry, first twelve tracks:
 
