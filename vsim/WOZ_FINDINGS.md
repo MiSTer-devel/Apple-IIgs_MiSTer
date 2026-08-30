@@ -344,3 +344,67 @@ empty-drive sense, and LSS clocking", which post-dates the local fork.
 Platforms: 0=II, 1=II+, 2=IIe, 3=IIe Enh, 4=IIe 65816, 5=IIgs. Compare screens
 visually -- PNG byte size differs between the two emulators and is only a rough
 proxy within one of them.
+
+
+---
+
+## First Math Adventures -- the remaining bug, characterised
+
+GSSquared boots it on `-p 5`; we stall. What is known:
+
+**It is a failing-read retry loop.** 276 seeks over 600 frames, across only 9
+distinct tracks, ending in a tight oscillation between quarter-track 0 and
+quarter-track 2 (119 and 121 visits). Quarter 2 is `0xFF` in TMAP -- unmapped --
+so half the retry loop is reading synthesised noise off an empty track.
+
+**Prologue detection is lopsided.** Counting `D5 AA 96` / `D5 AA AD` sequences
+out of the 5.25" shift register over 400 frames:
+
+    DOS 3.3 System Master   addr=344  data=344     balanced, boots
+    Commando                addr=344  data=341     balanced, boots
+    First Math Adventures   addr=228  data=333     lopsided, fails
+
+Careful: this is partly an *effect* of the retry loop, since the empty-track
+half of the oscillation contributes bytes but almost no prologues. It is not
+proof of an address-field decode fault on its own.
+
+**Why this disk is sensitive.** Its address fields are preceded by only about
+four 10-bit self-sync bytes, where DOS 3.3 has sixteen. Measured as bit-gaps
+between framed bytes on track 0:
+
+    ...
+    387  DF   bit-gap=10     <- self-sync (10-bit cells)
+    390  D5   bit-gap=10
+    391  DB   bit-gap= 8     <- normal bytes resume
+    401  96   bit-gap= 8     <- D5 AA 96
+    ...
+
+A short sync run leaves very little margin to re-frame, so any dropped or
+duplicated bit in the read path persists instead of being corrected at the next
+gap. That is what "lifespan of the data latch" is really probing.
+
+(An earlier draft of this section claimed the disk had *no* sync bytes at all.
+That was an artefact of a naive Python framer entering the region mis-framed and
+decoding the sync bytes as DF/BB/FB rather than FF.)
+
+### Ruled out
+
+- **Not the Q6H reset** added in `458dd35`: both First Math and DOS 3.3 trigger
+  exactly 2 Q6 resets per boot.
+- **Not the clear-on-read shortcut alone**: suppressed-read rates are comparable
+  between First Math (2.12 suppressed per served) and DOS 3.3 (1.83), which
+  boots.
+- **Not a double clear of `m_rsh`.** The sync-mode path clears the register
+  immediately *and* arms `clear_rsh_pending`, which fires a cycle later. That
+  looked like it could drop a bit and slip framing permanently on a
+  short-sync disk, but removing the redundant arm changed the prologue counts
+  not at all (228/333 before and after). Reverted as inert. Still arguably worth
+  tidying, but it is not this bug.
+
+### Next
+
+Trace diff. GSSquared boots it on `-p 5` and dumps a 65816 trace
+(`--trace-entries`, decode with `build/gstrace`); `COMPARING_WITH_VSIM.md` and
+`compare_traces.py` describe the workflow. Diverge-point analysis will say
+whether the RWTS gives up on a bad checksum, a missing address field, or a
+timeout -- which the black-box measurements above cannot separate.
