@@ -527,10 +527,26 @@ correctness change with a full suite run behind it.
 with *"a randomly-filled circular buffer of 32 bytes"* and *"roughly 30% of the
 buffer be 1 bits"* (our LFSR gate is `< 4'd5` of 16, i.e. 31% -- correct).
 Note `(head_window & 0x02) >> 1` is the **one-cell delay**, and the zero-run
-threshold is **4**, not 7. Our earlier attempt at exactly this regressed 12 of
-15 disks, but that attempt also had `head_window` reset to `4'hF` at track load
-and wrap and not updated on every cell -- so the reference algorithm has not
-really been tested here yet. That is the most promising thread left.
+threshold is **4**, not 7.
+
+**Tested properly and it does not work here.** A first attempt regressed 12 of
+15 disks, which I attributed to `head_window` being reset to `4'hF` rather than
+0. Re-implemented faithfully -- window initialised to `4'h0` at reset, track
+load and wrap; window test `{head_window[2:0], current_bit} == 0`; output the
+one-cell-delayed `head_window[0]` -- and **DOS 3.3 System Master itself stops
+booting** ("Check startup device!", 5615 bytes). So the init value was not the
+problem: the one-cell delay is incompatible with something else in this drive's
+data path, and the reference algorithm cannot simply be dropped in.
+
+The likely reason is architectural. The reference describes what the read head
+presents to the controller in an emulator where one component walks the
+bitstream. Here `flux_drive` emits a flux transition per 1-bit at mid-cell and
+`iwm_flux` re-derives bits from those transitions, with `bit_position`,
+`TRACK_LOAD_COMPLETE` and the wrap logic all keyed to the undelayed stream.
+Introducing a one-cell delay in the drive alone desynchronises it from
+everything downstream. Landing the reference model would mean moving the
+head-window into the decode side, or delaying the position bookkeeping with it
+-- a real refactor, not a patch.
 
 **4. Bazyar hit the identical First Math failure** and logged the fix:
 *"I think read should clear the data register ONLY when the hi bit is set (i.e.
