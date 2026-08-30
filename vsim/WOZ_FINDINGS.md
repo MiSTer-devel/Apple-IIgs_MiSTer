@@ -559,3 +559,48 @@ tried: no change. Both reverted.
 His log is worth reading in full -- it also records that Print Shop Companion
 needed random bits in long zero runs (*"inserting random bits when the source
 has long runs of 0's makes it BOOT!!!"*), which we already do and pass.
+
+
+## First Math -- cell-level trace (the sharpest picture so far)
+
+Logging every bit cell the 5.25" shift register consumes, armed on each `D5 AA`,
+gives a clean signature. Only the **first** address prologue on the track is
+corrupted; every later one decodes correctly:
+
+    pos=160    1 0 0 1 0 0 0 0  -> 90    WRONG  (first sector after playback starts)
+    pos=3245   1 0 0 1 0 1 1 0  -> 96    correct
+    pos=6330   ...              -> 96    correct
+    pos=9415 / 12500 / 15585 / 18670     all correct
+
+The 3085-bit spacing is one sector, so these are consecutive sectors on the same
+track and the bit pattern being decoded is identical each time. The failure is
+therefore **positional, not data-dependent**.
+
+At the corruption the flux stops outright: cells 158-164 all read 0 with
+`rdy=1 spin=1`, i.e. the drive is nominally ready and spinning but emits no
+transitions for about seven cells. Two 1-bits inside the `96` fall in that hole.
+
+Control: DOS 3.3 System Master's first `D5 AA` is followed by a correctly
+decoded `AD`, so a corrupt first sector is *not* normal startup behaviour here.
+
+Why it is fatal for this disk specifically: its address fields carry only ~4
+self-sync bytes where DOS 3.3 has 16, so there is not enough sync to re-frame
+after the hole. It then re-seeks, which reloads the track, which reproduces the
+hole -- the 0<->2 oscillation.
+
+### Also eliminated
+
+- **Re-enabling the stale-data playback gate** (`iwm_woz.v`, `drive525_track_loaded
+  = DISK_READY[0] && WOZ_TRACK1_DATA_VALID`). The flux hole looks exactly like a
+  read crossing a track reload, which is what that gate exists to prevent, but
+  enabling it does not fix the disk. Reverted.
+- **Even-address data latch** (`!ADDR[0]` instead of `ADDR[3]`) -- spec-correct
+  per the WOZ reference, but does not fix this disk on its own.
+- **Returning live `m_rsh` instead of `8'h00`** on a post-consume read.
+
+### The question that is now actually narrow
+
+Why does `flux_drive` emit no transitions for ~7 cells at the start of the first
+sector read, when the drive reports ready and spinning, and never again on later
+sectors of the same track? That is a startup/priming condition in the flux
+generation path, and the cell trace above reproduces it in a 200-frame run.
