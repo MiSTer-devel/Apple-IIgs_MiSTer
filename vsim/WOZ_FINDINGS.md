@@ -198,34 +198,49 @@ cross-track synchronisation tests, The Bilestoad is half-track addressing, and
 validates leaving the weak-bit threshold at 7. The TODO's proposed 7->4 change
 would have broken the very disk that certifies weak-bit handling.
 
-## Confirmed our bugs -- compare on the SAME platform
+## Final classification -- every image checked against GSSquared on IIgs
 
 **Run the reference on `-p 5` (IIgs), not `-p 2` (IIe).** Our core is a IIgs and
-several of these are Apple II-era disks. Comparing against IIe misclassifies
-disks that simply do not run on a IIgs as our bugs. Platform choice demonstrably
-flips verdicts in both directions: Planetfall fails on IIe and boots on II+ and
-on IIgs; Hard Hat Mack boots on IIe and fails on IIgs.
+several of these are Apple II-era disks; comparing against IIe misclassifies
+disks that simply do not run on a IIgs as our bugs. Platform choice flips
+verdicts in both directions. Control: DOS 3.3 System Master boots on `-p 5`
+(2777 bytes), so the platform itself is fine.
 
-Verified with DOS 3.3 System Master as a control (boots on `-p 5`, 2777 bytes).
+Score after fixing the result classifier: **19 of 26 BOOTED.**
 
 | Disk | GSSquared IIgs | Us | Verdict |
 |------|----------------|-----|---------|
 | Commando | boots | boots | **FIXED** `458dd35` |
-| Wings of Fury | boots | boots | **FIXED** `458dd35` |
-| First Math Adventures | boots ("Do you want sound?") | TEXT_ONLY | **our bug** |
-| Planetfall | boots ("80-COLUMN DISPLAY?") | BLANK | **our bug** |
-| Hard Hat Mack | **fails, "Check startup device!"** | TEXT_ONLY | NOT ours -- same failure |
-| Stargate | fails | BLANK | NOT ours |
+| Wings of Fury A | boots | boots | **FIXED** `458dd35` |
+| First Math Adventures | boots ("Do you want sound?") | ROM splash | **OURS -- the one real bug left** |
+| Planetfall | boots | boots | was never broken; classifier artifact |
+| Apple IIgs System Disk 1.1 | -- | boots (ProDOS 16 loader) | classifier artifact |
+| Crystal Quest | -- | boots ("Welcome to the IIgs") | classifier artifact |
+| Hard Hat Mack | fails, "Check startup device!" | same | not ours |
+| Stargate | fails | fails | not ours |
+| Border Zone A | fails | fails | not ours |
+| ProDOS User's Disk (FLUX) | fails, "Check startup device!" | same | not ours on this platform |
+| DOS 3.2 System Master | garbage even on `-p 0` | fails | 13-sector, explicitly optional |
+| Wings of Fury B | -- | "Check startup device!" | data side; correct behaviour |
 
-Hard Hat Mack was previously listed as our bug on the strength of an IIe run.
-On IIgs a known-good emulator produces the *identical* "Check startup device!"
-screen we do, so the extra-wide-track test cannot be exercised on this machine
-at all. Consistent with its runtime behaviour here: it performs exactly one seek
-(to track 0) and stops, never reaching the wide track. Its track 0 is ordinary
-16-sector format -- 11 `D5 AA 96` address and 11 `D5 AA AD` data prologues,
-structurally identical to DOS 3.3 -- so nothing about the image explains a
-IIgs-specific failure; it is likely a machine-compatibility issue rather than a
-floppy one.
+So **one** confirmed defect remains, not the five-item backlog earlier drafts of
+this document listed.
+
+### FLUX (WOZ 2.1) parses and loads correctly
+
+Worth recording because it looked like a feature gap. Tracing the ProDOS image:
+
+    WOZ_SCAN: INFO v3 flux_block=1360
+    WOZ_CTRL: Track 0 has FLUX data at TRKS entry 17
+    WOZ_CTRL: FLUX Track Info: StartBlock=224 BlockCount=61 FluxBytes=30908
+    WOZ_CTRL: Stored track 0 to side0 RAM, flux_bytes=30908 is_flux=1
+    WOZ_CTRL: Flux ticks sum=1605290
+
+The tick sum is right: 1,605,290 x 125 ns = 200.7 ms, one revolution at ~299 RPM.
+Parsing, chunk seeking, per-track flux/bitstream selection and loading all work.
+The disk then performs exactly one seek (to track 0) and stops, so if there is a
+flux defect it is in playback, not in the chunk handling. But GSSquared fails
+this image on IIgs the same way, so it is not demonstrably ours.
 
 ### Q6H reset ($C08D) -- fixed, with one known regression
 
