@@ -293,9 +293,25 @@ cancels it on read, and `m_data_read` then zeroes the value.
 A correct fix has to make bit 7 fall on a *timer*, not on a read -- while still
 falling fast enough that the ROM's polling loop (roughly 2.5-5 bit-times between
 reads at 1 MHz) cannot see the same byte twice. That window is tight and is
-probably why the read-clears shortcut was taken. Worth doing against the IWM/LSS
-spec rather than by experiment; verify with First Math Adventures and Wings of
-Fury, and re-run the full 26-image suite for prologue regressions.
+probably why the read-clears shortcut was taken.
+
+**Measured, and it rules out the simple story.** Counting data-register reads
+suppressed to 00 purely because the byte was already read:
+
+    First Math Adventures   suppressed=111616  served=52730   ratio 2.12
+    DOS 3.3 System Master   suppressed= 80896  served=44171   ratio 1.83
+
+DOS 3.3 boots and First Math does not, yet both suppress at a similar rate. The
+counter is dominated by ordinary ROM polling (the BPL loop re-reading while it
+waits), not by a program deliberately re-reading a byte. So "First Math hits the
+clear-on-read shortcut unusually often" is **not** the explanation, and a fix
+aimed at that alone is unlikely to help.
+
+Next step for this one is a CPU trace diff rather than more RTL probing.
+GSSquared boots it on `-p 5` and can dump a 65816 trace (`--trace-entries`,
+decoded with `build/gstrace`); `COMPARING_WITH_VSIM.md` documents the workflow,
+and `compare_traces.py` exists for the diff. Find where the two diverge and work
+back from there.
 
 ## Benchmarking against GSSquared
 
