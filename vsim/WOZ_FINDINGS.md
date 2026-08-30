@@ -437,3 +437,53 @@ The specific question to answer: inside $B900-$BAFF, does the RWTS fail on the
 address-field checksum, the data-field checksum, or a sector-not-found timeout?
 That distinguishes a framing fault from a data fault, which none of the
 black-box measurements here could separate.
+
+
+## First Math -- byte-level diagnosis (still unfixed)
+
+Dumping the bytes the 5.25" shift register produces and anchoring them against a
+Python decode of the same WOZ track gives an exact miscompare:
+
+    WOZ track data:  DF BB FB D5 DB AF EB FE AA FF AB BF D5 AA 96
+    our RTL output:  DF BB FB D5 DB AF EB FE AA FF AB BF D5 AA 90
+                                                             ^^^^
+
+Fourteen bytes match exactly, then the **third byte of the address prologue is
+read as 0x90 instead of 0x96**:
+
+    96 = 1001 0110
+    90 = 1001 0000      two 1-bits lost
+
+That single byte is why the RWTS never matches a prologue: the histogram shows
+`B954/B956` (`CMP #$D5 / BNE`) executing 63k times and only ~1640 reaching the
+byte after it.
+
+The 0x96 cell pattern is unremarkable -- 8 normal cells, `10010110`, no long
+zero run, no self-sync, no 10-bit cell. The preceding `D5` (`11010101`) also has
+adjacent 1-bits and decodes correctly, so back-to-back flux transitions are not
+inherently broken.
+
+**Not a whole-bit framing shift.** Re-framing the WOZ stream at every bit offset
+from -3 to +5 around that byte fails to re-align it with our subsequent output
+(best 1/20 bytes). Caveat on that test: the RTL dump is from a live boot, so the
+drive seeks after this point and the later bytes are not expected to correspond
+to this track anyway. The 14-byte match before the miscompare is the solid part.
+
+### Eliminated for this bug
+
+- Q6H reset (`458dd35`) -- both this disk and DOS 3.3 fire exactly 2 resets
+- clear-on-read shortcut -- suppression rates comparable to a disk that boots
+- double clear of `m_rsh` in the sync-mode path -- removing it changed nothing
+- data separator, **both** variants from `woz-separator-wip` -- still 0x90
+- weak-bit injection -- disabling it entirely leaves the byte stream
+  *byte-identical*, so it is not touching this region
+
+### Where to pick up
+
+The question is now very narrow: why do two 1-bits inside one ordinary 8-cell
+byte read as 0, when the neighbouring bytes decode correctly? That is a
+cell-sampling question in `iwm_flux.v`'s `sr525` path or in `flux_drive.v`'s
+transition generation, and it should be reproducible in a short VCD capture
+around that byte rather than by booting the disk. `--dump-vcd-after` with a
+2-3 frame window is the tool; the byte is reached early in the first track-0
+read.
