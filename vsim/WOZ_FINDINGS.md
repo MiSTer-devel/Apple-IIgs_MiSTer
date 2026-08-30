@@ -487,3 +487,59 @@ transition generation, and it should be reproducible in a short VCD capture
 around that byte rather than by booting the disk. `--dump-vcd-after` with a
 2-3 frame window is the tool; the byte is reached early in the first track-0
 read.
+
+
+## What the primary docs say (WOZ 2 reference + GSSquared dev log)
+
+Read late -- these should be consulted before any further IWM work.
+Sources: <https://applesaucefdc.com/woz/reference2/> and
+`gssquared/Docs/Woz.md` (Jawaid Bazyar's dev log, which walks through getting
+each of these same test images to boot).
+
+**1. `$C08D` resets the sequencer and clears the data latch.** Quoted directly:
+*"reading $C08D,X will reset the sequencer and clear the contents of the data
+latch"*, used by E7 and similar protection to resynchronise the nibble stream.
+This independently confirms the Q6H fix in `458dd35` -- it is spec behaviour,
+not a guess.
+
+**2. Every EVEN soft switch returns the data latch.** *"the low bit of the
+address line (A0) is connected through a NOT gate to the Output Enable line of
+the data latch. Therefore every soft switch on an even address should actually
+return the value of the data latch."* We gate `rd_is_data_reg` on `ADDR[3]`,
+restricting the latch to `$C088-$C08F`. Implementing `!ADDR[0]` instead is
+closer to the hardware; tried, and it does **not** fix First Math on its own, so
+it was reverted rather than shipped unverified. Worth revisiting as a separate
+correctness change with a full suite run behind it.
+
+**3. The reference fake-bit algorithm, verbatim:**
+
+    uint8_t head_window = 0;
+    uint8_t nextDiskBit() {
+        head_window <<= 1;
+        head_window |= getNextWozBit();
+        if ((head_window & 0x0f) != 0x00) {
+            return (head_window & 0x02) >> 1;
+        } else {
+            return fakeBit();
+        }
+    }
+
+with *"a randomly-filled circular buffer of 32 bytes"* and *"roughly 30% of the
+buffer be 1 bits"* (our LFSR gate is `< 4'd5` of 16, i.e. 31% -- correct).
+Note `(head_window & 0x02) >> 1` is the **one-cell delay**, and the zero-run
+threshold is **4**, not 7. Our earlier attempt at exactly this regressed 12 of
+15 disks, but that attempt also had `head_window` reset to `4'hF` at track load
+and wrap and not updated on every cell -- so the reference algorithm has not
+really been tested here yet. That is the most promising thread left.
+
+**4. Bazyar hit the identical First Math failure** and logged the fix:
+*"I think read should clear the data register ONLY when the hi bit is set (i.e.
+QA) [...] after the 'should not clear latch', First Math works!!"* Our
+`rd_ack_take` already requires `rd_data_latched[7]`, so we match that rule.
+Returning the live `m_rsh` instead of `8'h00` on a post-consume read (closer to
+a real LSS, which keeps accumulating rather than parking at zero) was also
+tried: no change. Both reverted.
+
+His log is worth reading in full -- it also records that Print Shop Companion
+needed random bits in long zero runs (*"inserting random bits when the source
+has long runs of 0's makes it BOOT!!!"*), which we already do and pass.
