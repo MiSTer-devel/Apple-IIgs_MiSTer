@@ -401,10 +401,39 @@ decoding the sync bytes as DF/BB/FB rather than FF.)
   not at all (228/333 before and after). Reverted as inert. Still arguably worth
   tidying, but it is not this bug.
 
+### Where execution actually is
+
+PC distribution over a 400-frame run here, by bank:page:
+
+    799370  FF:FC     ROM
+    686077  00:B9     <- DOS 3.3 RWTS
+    505412  00:BA     <- DOS 3.3 RWTS
+    195827  FC:CE     ROM
+    167590  00:C6
+
+We are stuck in the **DOS 3.3 RWTS** ($B900-$BAFF), the sector read/retry code,
+burning over a million instructions there and never leaving.
+
+GSSquared on the same disk finishes the read early -- by frame ~30 -- and runs
+the program's own code in page `00:64xx`, ending at a keyboard poll
+(`6455: LDA $C000 / BPL $6455`), which is the "Do you want sound? Y/N" prompt.
+So the divergence is unambiguous: their RWTS returns a good sector and ours
+never does.
+
 ### Next
 
-Trace diff. GSSquared boots it on `-p 5` and dumps a 65816 trace
-(`--trace-entries`, decode with `build/gstrace`); `COMPARING_WITH_VSIM.md` and
-`compare_traces.py` describe the workflow. Diverge-point analysis will say
-whether the RWTS gives up on a bad checksum, a missing address field, or a
-timeout -- which the black-box measurements above cannot separate.
+Instruction-level diff inside the RWTS. Two practical notes learned the hard way:
+
+- **GSSquared's trace ring holds ~100k instructions regardless of what
+  `--trace-entries` asks for** -- about 6 frames at 1 MHz. Asking for 2,000,000
+  still yields 100,000. To catch the disk read you must stop the run *during*
+  it; by frame 40 the read is already over and the ring only shows the keyboard
+  loop.
+- Our CPU log is `bank:PC: mnemonic` on stdout (no flag needed; `--no-cpu-log`
+  suppresses it), so `grep -oE '^[0-9A-F]{2}:[0-9A-F]{2}'` gives a cheap PC
+  histogram without the 200 MB/100-frame CSV trace.
+
+The specific question to answer: inside $B900-$BAFF, does the RWTS fail on the
+address-field checksum, the data-field checksum, or a sector-not-found timeout?
+That distinguishes a framing fault from a data fault, which none of the
+black-box measurements here could separate.
