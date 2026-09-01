@@ -604,3 +604,38 @@ Why does `flux_drive` emit no transitions for ~7 cells at the start of the first
 sector read, when the drive reports ready and spinning, and never again on later
 sectors of the same track? That is a startup/priming condition in the flux
 generation path, and the cell trace above reproduces it in a 200-frame run.
+
+
+### Traced through the drive: the drive is correct, the loss is at the cell boundary
+
+Instrumenting `flux_drive`'s bitstream emission path (the second
+`FLUX_TRANSITION <= 1'b1` site, ~line 1662 -- note the first site is the FLUX
+track path and probing it yields nothing for a bitstream disk):
+
+    EMIT pos=152..159  addr=19 data=96  bits 1 0 0 1 0 1 1 0   <- correct byte
+    FLUXOUT pos=148 150 152 155 157 158 160 161 162 ...        <- both adjacent
+                                                                  transitions ARE asserted
+
+So the drive reads the right BRAM byte (`addr=19 data=96`) and asserts flux for
+**both** of the adjacent 1-bits at 157 and 158, with `ld=1 rdy=1 wr=0`.
+
+And the edges are not lost in the detector either. Counting over 400 frames:
+
+    EDGESTATS: flux_high_cycles=690692 rising_edges=690692
+
+Every `FLUX_TRANSITION` assertion is a clean one-cycle pulse and produces exactly
+one `flux_edge`. Nothing is swallowed by the rising-edge detect.
+
+Yet the IWM shift register still produces `90`. The two transitions the drive
+emits at 157/158 arrive, and the shift register does not record them as two 1
+bits. That places the fault squarely in the **cell-boundary alignment between
+`flux_drive`'s `bit_timer` and `iwm_flux`'s `sr525_timer`** -- two independent
+free-running counters -- rather than in the data, the emission, or the edge
+detection.
+
+That is the data-separator problem in its purest form, but note both separator
+variants on `woz-separator-wip` were re-tested against this trace and the bits
+at 157/158 are *still* missed, so re-phasing on the edge as implemented there is
+not sufficient. The next attempt should work from the cell trace directly:
+instrument `sr525_timer` and the drive's `bit_timer` together over cells 145-170
+and find where a drive cell fails to line up with an IWM cell.
