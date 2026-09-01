@@ -845,8 +845,7 @@ module iwm_woz (
     // transitions so the SmartPort protocol sees an idle bus (no floppy data interference).
     // On real hardware, the SmartPort bus and 5.25" floppy are on separate physical connectors.
     wire flux_transition = (flux_is_35_inch) ? ((drive_sel == 0) ? flux_transition_35 : flux_transition_35_2) :
-                                              (smartport_mode_sense ? 1'b0 :
-                                               ((drive_sel == 0) ? flux_transition_525 : 1'b0));
+                                              ((drive_sel == 0) ? flux_transition_525 : 1'b0);
 
     // Track which drive type's flux we're actually using (for window timing).
     // CRITICAL: Window timing must match the active 3.5" cleanup window, not just
