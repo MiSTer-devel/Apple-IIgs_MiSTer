@@ -639,3 +639,32 @@ at 157/158 are *still* missed, so re-phasing on the edge as implemented there is
 not sufficient. The next attempt should work from the cell trace directly:
 instrument `sr525_timer` and the drive's `bit_timer` together over cells 145-170
 and find where a drive cell fails to line up with an IWM cell.
+
+
+### Phase trace: edges ARE detected at the failing cells
+
+Logging `FLUX_TRANSITION`, `prev_flux`, `flux_edge`, `sr525_timer` and
+`FLUX_BIT_TIMER` together across the cells carrying the mis-decoded `0x96`:
+
+    PH pos=155 drv=27 FT=1 prev=0 edge=1 sr=46 seen=0
+    PH pos=157 drv=27 FT=1 prev=0 edge=1 sr=46 seen=0
+    PH pos=158 drv=27 FT=1 prev=0 edge=1 sr=46 seen=0
+    PH pos=160 drv=27 FT=1 prev=0 edge=1 sr=46 seen=0
+
+`flux_edge` fires at 157 and 158 -- the two cells whose 1-bits go missing. This
+**contradicts** the earlier conclusion in this file that "the IWM sees neither".
+The edges are detected; the bits are lost somewhere between `flux_edge` and the
+shift register.
+
+The two counters are also in **fixed phase**, not drifting: the offset is a
+constant 19 clocks (`drv=27 <-> sr=46`, `drv=2 <-> sr=21`, `drv=1 <-> sr=20`),
+which is expected since `BIT_CELL_525` and `SR525_BIT_CELL` are both 56 with no
+fractional term at timing 32. So each IWM cell contains exactly one drive
+mid-cell instant, and two transitions cannot merge into one cell. That rules out
+the drift/merge explanation for the data separator as well.
+
+What remains: `flux_edge` is asserted, but `sr525_flux_seen` is not set (or is
+cleared) before the shift at `sr525_timer == 1` consumes it. The next probe
+should log `sr525_flux_seen` on **every** clock across cells 155-160 -- not just
+at boundaries -- and find the cycle where it is cleared without a shift having
+occurred.
