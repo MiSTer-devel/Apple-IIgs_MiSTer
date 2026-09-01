@@ -668,3 +668,46 @@ cleared) before the shift at `sr525_timer == 1` consumes it. The next probe
 should log `sr525_flux_seen` on **every** clock across cells 155-160 -- not just
 at boundaries -- and find the cycle where it is cleared without a shift having
 occurred.
+
+
+## After the SmartPort flux fix (`8c4f9d7`): what is still wrong
+
+The first-sector byte corruption is gone, but the disk still stops at the ROM
+splash. Prologue counts over 400 frames, with the fix in:
+
+    First Math   bytes=134665  addr=229  data=334     (was 228/333)
+    DOS 3.3      bytes=135283  addr=345  data=343     balanced, boots
+
+So the imbalance is essentially unchanged: we still find roughly two thirds as
+many address prologues as data prologues, where they should be 1:1.
+
+**The asymmetry lines up with sync length.** Measured on this disk's track 0,
+address fields are preceded by only about **4** self-sync bytes while data
+fields get **7-8**. We miss the ones with less sync. That says byte framing is
+being lost routinely somewhere in the read path, and is only recovered when a
+long enough sync run follows -- which is exactly why this disk is fragile and
+DOS 3.3 (16 sync bytes before every address field) is not.
+
+### Also eliminated
+
+- **CPU reads do not disturb the shift register.** All three
+  `clear_rsh_pending <= 1'b1` sites are byte-completion paths; none is in the
+  read path, so the "reading clears the register mid-byte" theory is out.
+- The PC histograms taken with `--fixed-time` and CPU tracing at 250+ frames are
+  **timeout-truncated** and must not be used for before/after comparison -- both
+  runs die at the same wall-clock point with identical counts regardless of
+  behaviour. Use `--no-cpu-log` plus targeted counters instead.
+
+### Where to go next
+
+The remaining defect is a recurring loss of byte framing, not a single bad byte.
+Given the read path is now verified correct end to end for an individual cell
+(drive emits, mux passes, edge detects, register shifts), the next thing to
+instrument is *where framing slips across a field boundary*: log the shift
+register and cell counter continuously across the gap between a data field and
+the following address field, and find the cell where the byte boundary moves.
+
+Note this is the same underlying symptom the WOZ reference's LSS section
+describes, and Bazyar's log records him eventually implementing the real logic
+state sequencer rather than patching around it (`Docs/Woz.md`, "Thinking about
+the LSS"). That may be what this ultimately needs.
