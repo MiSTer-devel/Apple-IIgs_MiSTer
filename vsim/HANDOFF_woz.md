@@ -59,7 +59,8 @@ python3 woz_compare.py woz_out/results.csv woz_ref/results.csv
 # per-defect boot rates against the classification map
 python3 woz_join.py woz_out/results.csv
 
-# reference emulator (known-good). MUST use -p 5 (IIgs) to match our core.
+# reference emulator (known-good). MUST use -p 5 (IIgs ROM 01) or -p 6 (ROM 3)
+# to match our core; -p 3 is the enhanced //e (65C02) for the IIe port.
 cd /home/alans/mister/gssquared-bench
 cmake --install build            # REQUIRED; build/GSSquared aborts on a missing font
 DISPLAY=:0 LD_LIBRARY_PATH="$PWD/build/lib" ./build/bin/GSSquared \
