@@ -42,6 +42,17 @@ module clock_divider (
 
     input  wire        stretch,        // Stretch signal for extended cycles
 
+    // 5.25" drive-enable holdover. The IWM keeps /ENBL asserted for ~1 s after
+    // the motor-off switch ($C0E8) when mode bit 2 is clear, and the FPI's
+    // slot-6 motor-on detect follows that enable, not the bare soft switch --
+    // so the machine stays at 1 MHz for the spin-down second. Programs rely on
+    // it: Bouncing Kamungas touches $C0E8 and then reads the whole sector at
+    // Apple II timing while the disk coasts. Same model as Clemens
+    // (clem_iwm_speed_disk_gate on CLEM_IWM_FLAG_DRIVE_ON + drive_hold_ns).
+    // Driven by iwm_woz's IWM_ENBL (iwm_active) gated to the 5.25" bus (!DISK35);
+    // with mode bit 2 set (no holdover) it drops with the switch, as on hardware.
+    input  wire        disk_motor_hold,
+
     // PH0 phase/edge from the VGC/Mega II video timebase (video_timing.v).
     // ph0_phase_vid = hsub (0..13, the PH0 sub-char phase); ph0_stb_vid pulses
     // at the first pixel of each Mega II char (the PH0 boundary). Used to slave
@@ -246,7 +257,7 @@ assign ph2_en = ph2_en_r & ~fast_escape;
 wire slow_request = (cyareg[7] == 1'b0 && !accel_active) ||
                    (waitforC0C8 && cyareg[0]) ||
                    (waitforC0D8 && cyareg[1]) ||
-                   (waitforC0E8 && cyareg[2]) ||
+                   ((waitforC0E8 || disk_motor_hold) && cyareg[2]) ||
                    (waitforC0F8 && cyareg[3]);
 
 `ifdef DEBUG_VERBOSE

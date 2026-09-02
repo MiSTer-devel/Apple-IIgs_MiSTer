@@ -94,6 +94,10 @@ module iwm_woz (
 
     // Motor status for clock slowdown
     output          FLOPPY_MOTOR_ON,
+    // IWM drive-enable (/ENBL) state: motor commanded on, or the mode-bit-2
+    // motor-off holdover still running. This is what the FPI's slot-6 motor-on
+    // detect follows for the 1 MHz slowdown (see clock_divider disk_motor_hold).
+    output          IWM_ENBL,
 
     // 3.5" drive motor status (for dirty track flush in woz_floppy_controller)
     output          FLOPPY35_MOTOR_ON,
@@ -1267,6 +1271,7 @@ module iwm_woz (
     // Only slow down for 5.25" drives (motor_spinning tracks 5.25" state/inertia).
     // 3.5" drives (handled by Sony logic) should NOT slow the system to 1MHz.
     assign FLOPPY_MOTOR_ON = motor_spinning;
+    assign IWM_ENBL = iwm_active;
 
     // 3.5" drive motor spinning state (from flux_drive Sony motor logic)
     // Used by woz_floppy_controller to trigger dirty track flush on motor-off

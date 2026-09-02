@@ -374,6 +374,7 @@ module iigs
   logic               speaker_state;  // Apple II speaker toggle state
   logic [7:0]         DISK35;
   // floppy_motor_on is now a module output (for clock slowdown + dirty track flush)
+  wire iwm_enbl;  // IWM /ENBL state incl. motor-off holdover (feeds clock_divider slow mode)
   logic [7:0]         C02BVAL;
 
   logic [7:0]         VGCINT; //23
@@ -2434,6 +2435,7 @@ wire ready_out;
       .WOZ_TRACK1_BIT_WR_ADDR(WOZ_TRACK1_BIT_WR_ADDR),
       // Motor status for clock slowdown
       .FLOPPY_MOTOR_ON(floppy_motor_on),
+      .IWM_ENBL(iwm_enbl),
       .FLOPPY35_MOTOR_ON(floppy35_motor_on),
       .DRIVE35_EJECT_REQ(drive35_eject_req)
   );
@@ -3007,6 +3009,7 @@ clock_divider clk_div_inst (
     .is_rom_access(rom_ce),
     .reset(reset),
     .stretch(1'b0),  // legacy unused stretch input (superseded by ph0_*_vid below)
+    .disk_motor_hold(iwm_enbl && !DISK35[6]),  // 5.25" /ENBL (with mode-bit-2 holdover) keeps 1 MHz through spin-down
     .ph0_phase_vid(PH0_PHASE_VID),  // VGC/Mega II PH0 phase (Stage 1: wired, not yet consumed)
     .ph0_stb_vid(PH0_STB_VID),      // VGC/Mega II PH0 boundary strobe
     .line_stb_vid(LINE_STB_VID),    // VGC/Mega II line-boundary strobe (PH0 grid anchor)
