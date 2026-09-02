@@ -117,11 +117,27 @@ IIgs boots any of them from a 5.25" drive, the sequencer hold is a few
 microseconds too short and `sr525_seq_armed` in `iwm_flux.v` is where to look.
 If not, this is correct behaviour and they were never really booting.
 
+## The //e port (done 2026-09-02, not yet on hardware)
+
+`Apple-II_MiSTer` `rtl/disk_ii_woz.sv` carries this engine (flux_drive,
+woz_floppy_controller unchanged; the sequencer re-implemented on the Disk II
+switches) and synthesizes; `Apple-II-Verilog_MiSTer` runs the same module in
+Verilator with a real 6502 and boots the WOZ test set. Three //e findings worth
+knowing here, all in the //e TODO and code comments: Verilator mis-evaluates
+element-wise assigned unpacked wire arrays (declare per-instance wires inside
+the generate scope); the calibrated `timing*7/4` cell makes a byte exactly
+`timing` CPU cycles, which phase-locks a //e RWTS loop to the drive, so the
+//e uses the physical 200 ms / bit-count cell per track (`woz_cell525.sv`;
+the IIgs is unaffected because its slow-mode cycles are not locked that way);
+and the //e sequencer takes its cell boundary from the drive's own bit timer,
+because two free-running fractional accumulators walk apart within a track.
+That last point is worth considering for `iwm_flux.v`'s `sr525_timer` too.
+
 ## Recommended next step
 
-1. Settle the open question above on real hardware before touching the hold.
-2. Port the fixed engine to `Apple-II_MiSTer` (its TODO Phase 1 item 4). The
-   sequencer maps directly onto the P6; the speed holdover does not apply.
+1. Run the //e port on hardware (its TODO has the gauntlet order).
+2. Settle the open Frogger/Maze Craze/Quadrant question on a real IIgs before
+   touching the hold.
 3. Hard Hat Mack / Stargate only if GSSquared can be made to boot them (it
    fails both on `-p 5`, so they are not demonstrably ours).
 
