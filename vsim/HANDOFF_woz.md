@@ -1,6 +1,6 @@
 # WOZ work — handoff
 
-State as of 2026-09-01 (evening). Branch `woz-fixes`, tree clean.
+State as of 2026-09-02. Branch `woz-fixes` (pushed to `alanswx`), tree clean.
 Read this first, then `WOZ_FINDINGS.md` for the evidence behind every claim.
 
 ## TL;DR
@@ -99,16 +99,28 @@ data register starts behaving is not necessarily a disk bug.
 Diffed against `woz_sp`, not `woz_ref` (which is from 2026-08-28 and predates
 four commits): +9 (all Newsroom revisions), and 13 changed of which 7 boot at
 2500 frames, 2 are booted programs at a name prompt, and 4 fail identically
-on GSSquared `-p 5` (Frogger, Maze Craze, Quadrant 6112, Mr. Do). Details and
-the Frogger mechanism in `WOZ_FINDINGS.md`, "202-disk corpus". When you next
-save a corpus reference, save it from this state and run it at 2500 frames.
+on GSSquared `-p 5` (Frogger, Maze Craze, Quadrant 6112, Mr. Do); ROM 01 gives
+the same. Details and the Frogger mechanism in `WOZ_FINDINGS.md`, "202-disk
+corpus". When you next save a corpus reference, save it from this state and
+run it at 2500 frames.
+
+**Open question, needs real hardware.** Frogger, Maze Craze and Quadrant 6112
+booted on the old clear-on-read shortcut and now stop at the IIgs ROM's
+"Check startup device!" -- exactly as GSSquared does. If a real ROM 1 or ROM 3
+IIgs boots any of them from a 5.25" drive, the sequencer hold is a few
+microseconds too short and `sr525_seq_armed` in `iwm_flux.v` is where to look.
+If not, this is correct behaviour and they were never really booting.
 
 ## Recommended next step
 
-Hard Hat Mack / Stargate only if GSSquared can be made to boot them (it currently fails both on `-p 5`, so they are not
-demonstrably ours). The window-based 3.5" decoder and latch mode are untouched
-by the sequencer change; a real cleanup would be to unify them, but nothing
-currently failing motivates it.
+1. Settle the open question above on real hardware before touching the hold.
+2. Port the fixed engine to `Apple-II_MiSTer` (its TODO Phase 1 item 4). The
+   sequencer maps directly onto the P6; the speed holdover does not apply.
+3. Hard Hat Mack / Stargate only if GSSquared can be made to boot them (it
+   fails both on `-p 5`, so they are not demonstrably ours).
+
+The window-based 3.5" decoder and latch mode are untouched by the sequencer
+change; unifying them would be a real cleanup, but nothing failing motivates it.
 
 ## Dead ends — do not repeat
 
