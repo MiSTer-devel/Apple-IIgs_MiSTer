@@ -51,10 +51,16 @@ cd vsim
 ./run_woztest_suite.sh woztest_out 1500 12      # 1500 frames; 400 is NOT enough
 VEMU=./obj_dir_lss/Vemu ./run_woztest_suite.sh woztest_out 1500 12   # alternate build
 
-# 202-disk corpus regression (22 odd-timing + 180 controls)
-./test_woz_batch.sh --retest verify_p0.txt --jobs 12 --frames 1200 \
-                    --timeout 1400 --out woz_out
+# 202-disk corpus regression (22 odd-timing + 180 controls). ~5.5 h at 12 jobs.
+./test_woz_batch.sh --retest verify_p0.txt --jobs 12 --frames 2500 \
+                    --timeout 2800 --out woz_out
 python3 woz_compare.py woz_out/results.csv woz_ref/results.csv
+# woz_ref/ = frozen 2026-09-02 from b78c007 at 2500 frames (175 BOOTED, 25
+# TEXT_ONLY, 2 BLANK, 0 TIMEOUT). The 2026-08-28 one is woz_ref_20260828/.
+# The status classifier is frame-sensitive: a program that has moved on to a
+# name prompt or a demo scores TEXT_ONLY/BLANK, so eyeball every "regression"
+# (shots/<hash>.png) before believing it. Same build at 1200 vs 2500 frames
+# already flips 18 statuses with zero real change.
 
 # per-defect boot rates against the classification map
 python3 woz_join.py woz_out/results.csv
@@ -102,8 +108,7 @@ four commits): +9 (all Newsroom revisions), and 13 changed of which 7 boot at
 2500 frames, 2 are booted programs at a name prompt, and 4 fail identically
 on GSSquared `-p 5` (Frogger, Maze Craze, Quadrant 6112, Mr. Do); ROM 01 gives
 the same. Details and the Frogger mechanism in `WOZ_FINDINGS.md`, "202-disk
-corpus". When you next save a corpus reference, save it from this state and
-run it at 2500 frames.
+corpus". The reference was re-frozen from this state at 2500 frames (`woz_ref/`).
 
 **Open question, needs real hardware.** Frogger, Maze Craze and Quadrant 6112
 booted on the old clear-on-read shortcut and now stop at the IIgs ROM's
@@ -171,9 +176,9 @@ Each was tested and is documented with evidence in `WOZ_FINDINGS.md`.
 - The corpus harness's 1200 frames is too short now that the motor-off second
   runs at 1 MHz: The Halley Project and seven other corpus disks need up to
   ~2500. Use `--frames 2500` for corpus runs.
-- `woz_ref/` is stale (2026-08-28). The last pre-sequencer full run is
-  `woz_sp/`; the post-sequencer run is `woz_out_lss/` (1200 frames) with the
-  13 changed disks rerun at 2500 in `woz_lss2500/`.
+- `woz_ref/` is the 2026-09-02 reference at 2500 frames. `woz_ref_20260828/`
+  is the old one; `woz_sp/` the last pre-sequencer full run; `woz_out_lss/`
+  the post-sequencer run at 1200 frames.
 
 ## Corrections I made to my own earlier conclusions
 
