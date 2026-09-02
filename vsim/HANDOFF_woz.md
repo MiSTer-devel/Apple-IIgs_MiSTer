@@ -1,17 +1,19 @@
 # WOZ work — handoff
 
-State as of 2026-09-01. Branch `woz-fixes`, 25 commits ahead of `main`, tree clean.
+State as of 2026-09-01 (evening). Branch `woz-fixes`, tree clean.
 Read this first, then `WOZ_FINDINGS.md` for the evidence behind every claim.
 
 ## TL;DR
 
 Started from the six WOZ defects in `Apple-II_MiSTer/TODO.md` (Phase 1, item 4).
-**Three of the six were misdiagnosed.** Four RTL fixes shipped. One bug remains
-open with a full diagnosis. The durable output is the measurement setup: a
+**Three of the six were misdiagnosed.** Five RTL fixes shipped, the last being
+the Disk II sequencer semantics for 5.25" reads, which closed the First Math bug
+and four more images. The durable output is the measurement setup: a
 verified-good test suite, a known-good reference emulator, and ~15 documented
 dead ends.
 
-WOZ Test Images score: **19 of 26 BOOTED.**
+WOZ Test Images score: **24 of 26 BOOTED** (was 19). Remaining: Hard Hat Mack
+and Stargate (GSSquared fails both on `-p 5` too).
 
 ## Branches
 
@@ -32,9 +34,13 @@ WOZ Test Images score: **19 of 26 BOOTED.**
 | `d3ab554` | `optimal_bit_timing` honoured (restored after I wrongly reverted it) |
 | `72e17ea` | harness passes `--fixed-time` — results are reproducible |
 | `ad58d62` | results classified by failure screen, not PNG size |
+| (this)    | **5.25" sync reads follow the Disk II sequencer**: QA hold until the next pulse, no clear on read, READLOAD fills with WP sense. First Math, DOS 3.2, ProDOS User's Disk, Border Zone A/B boot |
+| (this)    | **1 MHz persists through the 5.25" motor-off holdover** (`iwm_woz` `IWM_ENBL` -> `clock_divider` `disk_motor_hold`, honours mode bit 2). Needed by Bouncing Kamungas once reads stopped clearing on read |
 
-`458dd35` carries one known regression: **The Halley Project** goes BOOTED ->
-BLANK in the corpus. Taken deliberately; reasoning is in that commit message.
+`458dd35`'s known regression, **The Halley Project**, is resolved by the
+sequencer change: it matches GSSquared frame-for-frame at 2500 frames. It still
+shows BLANK at the corpus harness's 1200 frames (slow loader; the old "BOOTED"
+was its loading splash), so retest it with `--frames 2500`.
 
 ## Tooling — exact commands
 
@@ -43,6 +49,7 @@ cd vsim
 
 # WOZ Test Images (26 verified-good images, each isolating one behaviour)
 ./run_woztest_suite.sh woztest_out 1500 12      # 1500 frames; 400 is NOT enough
+VEMU=./obj_dir_lss/Vemu ./run_woztest_suite.sh woztest_out 1500 12   # alternate build
 
 # 202-disk corpus regression (22 odd-timing + 180 controls)
 ./test_woz_batch.sh --retest verify_p0.txt --jobs 12 --frames 1200 \
@@ -64,47 +71,35 @@ DISPLAY=:0 LD_LIBRARY_PATH="$PWD/build/lib" ./build/bin/GSSquared \
 cherry-picked (branch `bench`). v0.11 matters: it has "IWM / floppy — correct
 drive-enable model, empty-drive sense, and LSS clocking".
 
-## The one open bug: First Math Adventures
+## First Math Adventures: closed
 
-GSSquared boots it on `-p 5`; we stop at the ROM splash. It is the WOZ suite's
-data-latch-lifespan test.
+It was the sequencer, as both primary sources said. Its RWTS re-reads `$C08C`
+8 cycles after a D5 and expects the D5 to still be there (`B958-B95E` in the
+trace), which only holds if a completed byte stays latched until the *next read
+pulse* -- this disk's address marks are D5 plus trailing zero bits. The
+read-clears-it gate hid the byte; a fixed 2-cell timer (tried first) is too
+short as well. `iwm_flux.v`'s `sr525` path now implements the hold/arm/restart
+sequence from OpenEmulator/GSSquared; details and the full before/after table
+are in `WOZ_FINDINGS.md`, "Sequencer semantics for 5.25\" sync reads".
 
-**Symptom.** Stuck in the DOS 3.3 RWTS (`$B900-$BAFF`) prologue search:
-`CMP #$D5 / BNE` runs 63k times, ~1640 get past it. 118 seeks over 400 frames,
-oscillating between quarter-track 0 and the unmapped quarter-track 2.
+The earlier "address vs data prologue asymmetry" was a symptom of the constant
+recalibration, not its cause. Don't chase it.
 
-**Measured.** Prologue counts `addr=229 data=334` where DOS 3.3 is a balanced
-`345/343`. The asymmetry tracks sync length: this disk's **address** fields
-carry ~4 self-sync bytes, its **data** fields 7-8, and we miss the short-sync
-ones. So byte framing is lost routinely and only recovers when a long enough
-sync run follows. DOS 3.3 has 16 sync bytes before every address field, which is
-why it is immune.
+## Bouncing Kamungas: closed (speed, not disk)
 
-**Verified correct end to end for a single cell** (this is the useful part —
-don't re-check these):
-- WOZ data is right (`addr=19 data=96`)
-- drive asserts flux for both adjacent 1-bits
-- every assertion is a clean 1-cycle pulse (`flux_high_cycles == rising_edges`, 690692 each)
-- `flux_edge` fires
-- the two cell counters are in **fixed phase**, constant 19-clock offset, no drift
-
-So the remaining fault is **recurring framing loss across field boundaries**,
-not within a cell.
+It regressed with the sequencer alone and was a CPU-speed bug the shortcut had
+been hiding: the game reads a sector at 2.8 MHz during the motor-off second
+because our slot-6 slow mode ended at the `$C0E8` access instead of following
+the IWM drive enable's one-second holdover. Fixed in `clock_divider.v`; see
+`WOZ_FINDINGS.md`, "Bouncing Kamungas". Lesson: a disk that breaks when the
+data register starts behaving is not necessarily a disk bug.
 
 ## Recommended next step
 
-Implement the real **LSS (logic state sequencer)** rather than patching the
-simplified shift register. Both primary sources point there:
-
-- WOZ 2 reference: <https://applesaucefdc.com/woz/reference2/>
-- `gssquared-bench/Docs/Woz.md` — Bazyar's dev log. He hit this exact disk with
-  this exact symptom ("then it tries to read, then it does a recalibrate") and
-  ended up implementing the real LSS. Read "Thinking about the LSS" onward.
-
-Our `sr525` path is a simplified shift register; a comment there records that a
-window-based decoder was tried and abandoned because it "breaks timing-sensitive
-copy protection". That is a refactor with real regression risk across all 26
-images — scope it deliberately.
+Hard Hat Mack / Stargate only if GSSquared can be made to boot them (it currently fails both on `-p 5`, so they are not
+demonstrably ours). The window-based 3.5" decoder and latch mode are untouched
+by the sequencer change; a real cleanup would be to unify them, but nothing
+currently failing motivates it.
 
 ## Dead ends — do not repeat
 
@@ -133,7 +128,8 @@ Each was tested and is documented with evidence in `WOZ_FINDINGS.md`.
   including all 11 timing-28 disks. Use `--retest` with an explicit list.
 - **Compare against GSSquared on `-p 5` (IIgs)**, not `-p 2`. Platform choice
   flips verdicts both ways — it moved Planetfall and Hard Hat Mack between
-  categories.
+  categories. It is blind to CPU-speed bugs (its floppy runs off the CPU
+  clock), and it is not frame-comparable for load times.
 - **A TIMEOUT cluster is almost always starved workers**, not a regression.
   Check for two suites running at once (`pgrep -x Vemu | wc -l` should be your
   `--jobs` value).
@@ -144,6 +140,14 @@ Each was tested and is documented with evidence in `WOZ_FINDINGS.md`.
 - **There are two `FLUX_TRANSITION <= 1'b1` sites** in `flux_drive.v`. The first
   is the FLUX-track path; the bitstream path is the second (~line 1662).
 - `pgrep -f <pattern>` matches its own command line. Key monitors on a PID.
+  `pkill -f` will kill YOUR shell too.
+- **Never edit `run_woztest_suite.sh` while it is running.** bash reads the
+  script incrementally; editing it mid-run made it re-execute the job line and
+  start a second copy of the suite into the same output directory.
+- Rebuilding `obj_dir/` while a suite is running swaps the binary under later
+  jobs. Verilate into another `--Mdir` (see `VEMU=` above) instead.
+- The corpus harness's 1200 frames is too short for The Halley Project (needs
+  ~1800). Use `--frames 2500` for it.
 
 ## Corrections I made to my own earlier conclusions
 

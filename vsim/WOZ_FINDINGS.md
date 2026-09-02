@@ -711,3 +711,86 @@ Note this is the same underlying symptom the WOZ reference's LSS section
 describes, and Bazyar's log records him eventually implementing the real logic
 state sequencer rather than patching around it (`Docs/Woz.md`, "Thinking about
 the LSS"). That may be what this ultimately needs.
+
+## Sequencer semantics for 5.25" sync reads (First Math fixed)
+
+The First Math trace settled what the "data latch lifespan" test actually
+does. Its RWTS, after the `LDA $C08C,X / BPL` loop returns a D5:
+
+    B958: nop
+    B959: lda $c08c,x     ; second read, 8 cycles after the first, no wait loop
+    B95C: cmp #$d5
+    B95E: beq B972        ; D5 still latched -> protected address-mark path
+
+Over 273 D5 hits in 300 frames the second read never matched, so the disk's
+address marks are a D5 followed by extra zero bits, and the check relies on the
+Disk II logic state sequencer holding a completed byte until the *next read
+pulse* arrives (plus one cell). Neither the read-clears-it gate nor a fixed
+"2 bit times + 4 CLK" timer (tried first; the IWM spec's phrase describes only
+the adjacent-nibble case) can pass that.
+
+`iwm_flux.v` now models the sequencer for 5.25" sync (non-latch) reads, after
+OpenEmulator's abbreviated sequencer as used in GSSquared:
+
+- QA=0: shift the cell's pulse in from the right, as before.
+- QA=1: hold. A read pulse arms the restart; the next cell reloads the register
+  with `{6'b0, 1, bit}`. Adjacent nibbles give the familiar 2-cell hold; trailing
+  zero bits extend it. CPU reads never clear anything; the bus shows `m_rsh` live.
+- Q6=1/Q7=0 (READLOAD): register fills with the write-protect sense bit and
+  pulses are discarded, replacing the Q6-rising clear from `458dd35`. Same
+  effect for the `LDA $C08D,X` re-framing trick, but bits arriving while Q6 is
+  high are no longer accumulated (the P6 shifts WP in every LSS cycle instead).
+
+WOZ Test Images, 1500 frames, `--fixed-time`: **19 -> 23 of 26 BOOTED.**
+
+    BOOTED now:   First Math Adventures, DOS 3.2 System Master,
+                  ProDOS User's Disk, Border Zone side A, Border Zone side B
+    unchanged:    Hard Hat Mack, Stargate FAILED (GSSquared fails both on -p 5)
+
+Bouncing Kamungas went BOOTED -> BLANK with the sequencer alone and came back
+with the speed fix below.
+
+Corpus spot checks against GSSquared `-p 5`:
+
+- **The Halley Project** (the `458dd35` regression) boots: its E7/EE offset
+  check passes, and at frame 2500 the screen matches GSSquared's frame 2500
+  exactly ("Press any key to continue"). It is still BLANK at the corpus
+  harness's 1200 frames because its loader reads one sector per ROM call with
+  a seek check in between; the old "BOOTED" reference at 1200 was the ALERT
+  loading splash, and GSSquared runs its floppy off the CPU clock so it is not
+  frame-comparable. Retest it with `--frames 2500`.
+- **Empire II** unchanged (ROM splash, as before).
+
+Not a fix for the address/data prologue asymmetry story: that asymmetry was a
+symptom of the constant recalibration, not its cause.
+
+## Bouncing Kamungas: 1 MHz must persist through the motor-off holdover
+
+With the sequencer change alone Kamungas stopped booting. Its trace showed the
+right nibbles (the CPU-visible sequence matches the correctly framed track 0
+stream at nibble ~725), yet 31 of 32 address fields failed their checksum.
+The bus trace explained it: about 465 data-register reads per millisecond,
+i.e. the CPU was at 2.8 MHz. The game's motor routine touches $C0E9 and then
+$C0E8 immediately before its RWTS, and reads the sector while the drive coasts
+through the IWM's one-second motor-off holdover. Its 4-4 decode re-reads the
+register 11 cycles after each nibble, which is fine at 1 MHz but lands inside
+the ~8 us sequencer hold at 2.8 MHz, so nibbles were read twice. (The old
+clear-on-read shortcut hid this: a re-read returned 00 and the loop waited.)
+
+`clock_divider.v` dropped slot-6 slow mode the instant $C0E8 was accessed. The
+FPI follows the IWM drive enable, which stays asserted for the holdover second
+when mode bit 2 = 0; Clemens models exactly this (`clem_iwm_speed_disk_gate` on
+`CLEM_IWM_FLAG_DRIVE_ON`, held by `drive_hold_ns`). `iwm_woz.v` now exports
+`IWM_ENBL` (its `iwm_active`, which already implements the mode-bit-2 holdover)
+and `clock_divider` ORs `disk_motor_hold = iwm_enbl && !DISK35[6]` into the
+slot-6 term. Kamungas boots.
+
+Do NOT use `floppy_motor_on` (physical spin, unconditional 1 s) for this: the
+ROM's boot-time 5.25" probe turns the motor off with mode bit 2 SET, so on
+hardware the enable drops at once. Gating on the spin instead slowed every
+HDD/3.5" boot by a second and broke five `regression.sh` screenshots (Total
+Replay at frame 130 was still on its splash). With `IWM_ENBL` they match again.
+
+GSSquared is NOT a reference for this class of bug: it clocks the floppy off
+the CPU, so its CPU/disk ratio never changes and speed-dependent RWTS code
+always works there.
