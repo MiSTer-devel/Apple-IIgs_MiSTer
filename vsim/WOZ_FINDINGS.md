@@ -828,7 +828,8 @@ BOOTED there at 1200 frames, so `woz_sp` was an accurate baseline.)
 Frogger / Maze Craze / Quadrant 6112 are the ones to watch: they booted on the
 old shortcut and stop at the IIgs ROM on both this core and GSSquared `-p 5`.
 If someone can confirm they boot on a real ROM 3 IIgs, the sequencer hold is
-too short and that is the place to look.
+too short and that is the place to look. ROM 01 (`--rom 1`) behaves the same
+for all four, so it is not a ROM-revision difference in the boot code.
 
 ### Why Frogger (and its two siblings) stop at the IIgs ROM
 
