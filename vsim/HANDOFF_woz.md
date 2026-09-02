@@ -94,6 +94,15 @@ the IWM drive enable's one-second holdover. Fixed in `clock_divider.v`; see
 `WOZ_FINDINGS.md`, "Bouncing Kamungas". Lesson: a disk that breaks when the
 data register starts behaving is not necessarily a disk bug.
 
+## Corpus (202 disks): clean
+
+Diffed against `woz_sp`, not `woz_ref` (which is from 2026-08-28 and predates
+four commits): +9 (all Newsroom revisions), and 13 changed of which 7 boot at
+2500 frames, 2 are booted programs at a name prompt, and 4 fail identically
+on GSSquared `-p 5` (Frogger, Maze Craze, Quadrant 6112, Mr. Do). Details and
+the Frogger mechanism in `WOZ_FINDINGS.md`, "202-disk corpus". When you next
+save a corpus reference, save it from this state and run it at 2500 frames.
+
 ## Recommended next step
 
 Hard Hat Mack / Stargate only if GSSquared can be made to boot them (it currently fails both on `-p 5`, so they are not
@@ -146,8 +155,12 @@ Each was tested and is documented with evidence in `WOZ_FINDINGS.md`.
   start a second copy of the suite into the same output directory.
 - Rebuilding `obj_dir/` while a suite is running swaps the binary under later
   jobs. Verilate into another `--Mdir` (see `VEMU=` above) instead.
-- The corpus harness's 1200 frames is too short for The Halley Project (needs
-  ~1800). Use `--frames 2500` for it.
+- The corpus harness's 1200 frames is too short now that the motor-off second
+  runs at 1 MHz: The Halley Project and seven other corpus disks need up to
+  ~2500. Use `--frames 2500` for corpus runs.
+- `woz_ref/` is stale (2026-08-28). The last pre-sequencer full run is
+  `woz_sp/`; the post-sequencer run is `woz_out_lss/` (1200 frames) with the
+  13 changed disks rerun at 2500 in `woz_lss2500/`.
 
 ## Corrections I made to my own earlier conclusions
 

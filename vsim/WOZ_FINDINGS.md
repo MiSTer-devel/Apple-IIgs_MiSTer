@@ -794,3 +794,52 @@ Replay at frame 130 was still on its splash). With `IWM_ENBL` they match again.
 GSSquared is NOT a reference for this class of bug: it clocks the floppy off
 the CPU, so its CPU/disk ratio never changes and speed-dependent RWTS code
 always works there.
+
+## 202-disk corpus after the sequencer + speed changes
+
+`test_woz_batch.sh --retest verify_p0.txt --frames 1200` on the combined
+change, compared with `woz_sp` (the last full run before it; `woz_ref` is from
+2026-08-28 and predates four other commits, so do not diff against it):
+
+    IMPROVED  9   all nine "The Newsroom" revisions (the timing-34 disks):
+                  TEXT_ONLY -> BOOTED
+    REGRESSED 13  see below
+    unchanged 180
+
+The 13, rerun at 2500 frames and checked against GSSquared `-p 5`:
+
+    Boot at 2500 frames (load-time shift from the 1 MHz motor-off holdover;
+    these loaders turn the motor off between reads):
+        Adventure Double Feature Vol II A, All About Light and Sound,
+        Dinosaur Days Plus 2A, Empire II, Monstrous Monsters, Rampage,
+        The Adventures of Sarah and her Friends
+    Booted, sitting at a "type your name" prompt the harness scores TEXT_ONLY:
+        Case of the Great Train Robbery, Simultaneous Linear Equations
+    "Check startup device!" -- and GSSquared -p 5 shows exactly the same:
+        Frogger, Maze Craze Construction Set, Quadrant 6112
+    Garbage screen on GSSquared -p 5 as well:
+        Mr. Do
+
+So none of the 13 is a demonstrable regression; seven of them need more than
+1200 frames now, which is a harness setting, not a bug. (Confirmed against a
+clean build of the previous head, 5c5dfd0, in a worktree: 12 of the 13 were
+BOOTED there at 1200 frames, so `woz_sp` was an accurate baseline.)
+
+Frogger / Maze Craze / Quadrant 6112 are the ones to watch: they booted on the
+old shortcut and stop at the IIgs ROM on both this core and GSSquared `-p 5`.
+If someone can confirm they boot on a real ROM 3 IIgs, the sequencer hold is
+too short and that is the place to look.
+
+### Why Frogger (and its two siblings) stop at the IIgs ROM
+
+Frogger's track 0 puts the data field two zero bits after the address field
+(`... AA AA | 00 | D5 AA AD ...`, no address checksum or epilogue). Its D5
+completes ~40 us after the ROM's last address-field read and, under the
+sequencer hold, is replaced ~48 us after it (next pulse plus one cell). The
+IIgs ROM's path from the track compare back to its poll loop is 50 cycles
+(`C699..C6A4`, `C628`, `C656`, `C65E`), so at 1 MHz it returns just after the
+hold ends and reads `AA AD ...` -- the bus trace shows exactly that. It then
+never finds `D5 AA AD` and gives up with "Check startup device!". GSSquared
+does the same on `-p 5` and boots the disk on `-p 2` (IIe ROM, shorter path).
+The old clear-on-read model kept the D5 until the NEXT byte completed (32 us),
+which is why these three used to "boot": the shortcut was too generous.
