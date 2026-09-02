@@ -844,3 +844,43 @@ never finds `D5 AA AD` and gives up with "Check startup device!". GSSquared
 does the same on `-p 5` and boots the disk on `-p 2` (IIe ROM, shorter path).
 The old clear-on-read model kept the D5 until the NEXT byte completed (32 us),
 which is why these three used to "boot": the shortcut was too generous.
+
+## Cross-check: Appletini One's Disk II (AppleWin's model on a real //e)
+
+`/home/alans/mister/appletini-one/hdl/apple/disk2_card.sv` is a virtual Disk II
+for a Zynq card that sits on a real Apple //e bus, so its read latch is
+exercised by a real 6502 running real software; its acceptance list includes
+"NIB and WOZ copy-protected reads". The WOZ read path is AppleWin's
+(`woz_latch_delay_q` is AppleWin's `m_latchDelay`, and the Q6H comment cites
+AppleWin's `LoadWriteProtect()`). Per bit cell:
+
+    shift_next = {shift[6:0], bit}
+    if delay != 0: delay = max(delay-4, 0); if shift_next == 0: delay += 4
+    if delay_old == 0 or (delay_old <= 4 and shift_next != 0):
+        latch = shift_next
+        if shift_next[7]: delay = 7; shift = 0
+
+Traced against our sequencer for the two cases that matter:
+
+- Adjacent nibbles: byte completes (delay 7, shift 0); next cell's 1 makes
+  shift 01 with delay_old 7, latch unchanged; the cell after that has
+  delay_old 3 and shift 02|bit, latch takes the partial. Held 2 cells.
+- Trailing zeros: each zero cell puts the delay back to 7, so the byte is
+  held for the whole zero run, then 2 more cells once the first 1 arrives.
+
+That is exactly `sr525_seq_armed`'s hold/arm/restart, including the
+`{1, bit}` restart value. Reads never clear the latch; Q6H loads FF/00 by
+write-protect state and discards pulses while Q6 stays high. So our 5.25"
+read semantics now match AppleWin, GSSquared/OpenEmulator, and a hardware
+card that boots protected WOZs on a real //e.
+
+What it cannot settle: anything IIgs-specific. It is a Disk II card, not an
+IWM, on a //e whose boot ROM returns to polling sooner than the IIgs ROM, so
+Frogger/Maze Craze/Quadrant boot there for the same reason GSSquared `-p 2`
+boots them. It also says nothing about the CYAREG motor-off speed holdover.
+
+Worth borrowing later, both differ from ours: its MC3470 head window (4-bit,
+one-cell-delayed output) and its weak-bit model (random 1 with probability
+9830/32768 = 30% when the window is all zero, per the WOZ spec). The handoff
+lists the head-window model as a dead end here, so re-try it only with this
+implementation as the reference.
