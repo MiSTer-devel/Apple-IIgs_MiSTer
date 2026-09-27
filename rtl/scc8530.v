@@ -50,21 +50,22 @@ module scc
 	output [7:0]	rdata,
 	output	_irq,
 
-	/* Channel A serial port */
+	/* Channel A serial port (Printer Port / Slot 1 on Apple IIgs)
+	 * Reference: Apple IIgs Hardware Reference, Chapter 7 & Slot Register $C02D
+	 * Address mapping: $C039 (Command/Status), $C03B (Data)
+	 */
 	input	rxd,
 	output	txd,
-	input	cts, /* normally wired to device DTR output
-				* on Mac cables. That same line is also
-				* connected to the TRxC input of the SCC
-				* to do fast clocking but we don't do that
-				* here
-				*/
-	output	rts, /* on a real mac this activates line
-				* drivers when low */
+	input	cts, /* Active low (0 = Clear to Send, 1 = Busy) */
+	output	rts, /* Active low (0 = Ready to receive, 1 = Buffer full) */
 
-	/* Channel B serial port - for external loopback testing */
+	/* Channel B serial port (Modem Port / Slot 2 on Apple IIgs)
+	 * Address mapping: $C038 (Command/Status), $C03A (Data)
+	 */
 	input	rxd_b,
 	output	txd_b_out,
+	input	cts_b, /* Active low (0 = Clear to Send, 1 = Busy) */
+	output	rts_b, /* Active low (0 = Ready to receive, 1 = Buffer full) */
 
 	/* DCD for both ports are hijacked by mouse interface */
 	input	dcd_a, /* We don't synchronize those inputs */
@@ -153,6 +154,7 @@ module scc
 	reg		latch_open_a;
 	reg		latch_open_b;
 	reg		cts_latch_a;
+	reg		cts_latch_b;
 	reg		dcd_latch_a;
 	reg		dcd_latch_b;
 
@@ -319,7 +321,10 @@ module scc
 							/* State READY: This write is to WR0 - set register pointer */
 							rindex_a[2:0] <= wdata[2:0];
 							rindex_a[3] <= (wdata[5:3] == 3'b001);  // Point high
-							scc_state_a <= 1;  // Transition to REGISTER state
+							// Pointer 0 (e.g. a pure command write like Reset Ext/Status) leaves
+							// the next access on WR0/RR0, so stay in READY. Otherwise the following
+							// pointer write would be taken as WR0 data and the read would return RR0.
+							scc_state_a <= (wdata[2:0] != 3'd0) || (wdata[5:3] == 3'b001);
 `ifdef DEBUG_SCC
 							$display("SCC_WR0_WRITE: ch=A wdata=%02x rindex_new=%x point_high=%b state=READY->REGISTER",
 								wdata, {((wdata[5:3] == 3'b001) ? 1'b1 : 1'b0), wdata[2:0]},
@@ -342,7 +347,10 @@ module scc
 							/* State READY: This write is to WR0 - set register pointer */
 							rindex_b[2:0] <= wdata[2:0];
 							rindex_b[3] <= (wdata[5:3] == 3'b001);  // Point high
-							scc_state_b <= 1;  // Transition to REGISTER state
+							// Pointer 0 (e.g. a pure command write like Reset Ext/Status) leaves
+							// the next access on WR0/RR0, so stay in READY. Otherwise the following
+							// pointer write would be taken as WR0 data and the read would return RR0.
+							scc_state_b <= (wdata[2:0] != 3'd0) || (wdata[5:3] == 3'b001);
 `ifdef DEBUG_SCC
 							$display("SCC_WR0_WRITE: ch=B wdata=%02x rindex_new=%x point_high=%b state=READY->REGISTER",
 								wdata, {((wdata[5:3] == 3'b001) ? 1'b1 : 1'b0), wdata[2:0]},
@@ -777,7 +785,7 @@ module scc
 	/* RR0 */
 	assign rr0_a = { 1'b0, /* Break */
 			 eom_latch_a, /* Tx Underrun/EOM - use latch instead of hardcoded 1 */
-			 1'b1, /* CTS - hardcode to 1 (always ready) for now */
+			 1'b1, /* CTS - hardcode to 1 (always ready) to prevent ROM HardCheck/Finder hang */
 			 1'b0, /* Sync/Hunt */
 			 1'b1, /* DCD - hardcode to 1 (carrier detected) */
 			 tx_empty_latch_a, /* Tx Empty - use latch like Clemens does */
@@ -796,7 +804,7 @@ module scc
 `endif
 	assign rr0_b = { 1'b0, /* Break */
 			 eom_latch_b, /* Tx Underrun/EOM - use latch instead of hardcoded 1 */
-			 1'b1, /* CTS - HARDCODED to 1 (no modem on channel B) */
+			 1'b1, /* CTS - hardcode to 1 (always ready) */
 			 1'b0, /* Sync/Hunt */
 			 1'b1, /* DCD - HARDCODED to 1 (no modem on channel B) */
 			 tx_empty_latch_b, /* Tx Empty - use latch */
@@ -1073,14 +1081,15 @@ end
 	 * corresponding interrupt is enabled in WR15
 	 */
 	assign dcd_ip_a = (dcd_a != dcd_latch_a) & wr15_a[3];
-	assign cts_ip_a = (cts_a != cts_latch_a) & wr15_a[5];
+	assign cts_ip_a = 1'b0;
 	assign dcd_ip_b = (dcd_b != dcd_latch_b) & wr15_b[3];
+	assign cts_ip_b = 1'b0;
 
 	/* Latches close when an enabled IP bit is set and latches
 	 * are currently open
 	 */
-	assign do_latch_a = latch_open_a & (dcd_ip_a | cts_ip_a  /* | cts... */);
-	assign do_latch_b = latch_open_b & (dcd_ip_b /* | cts... */);
+	assign do_latch_a = latch_open_a & (dcd_ip_a | cts_ip_a);
+	assign do_latch_b = latch_open_b & (dcd_ip_b | cts_ip_b);
 
 	/* "Master" interrupt, set when latch close & WR1[0] is set */
 	always@(posedge clk or posedge reset) begin
@@ -1209,26 +1218,25 @@ end
 	always@(posedge clk or posedge reset or posedge reset_a) begin
 		if (reset || reset_a) begin
 			// Initialize latches to match actual signal values
-			// DCD is tied to 1 in wrapper, CTS = ~tx_busy = ~0 = 1 after UART reset
 			dcd_latch_a <= 1;
 			cts_latch_a <= 1;
-			/* cts ... */
 		end else if(cep) begin
-			if (do_latch_a)
+			if (do_latch_a) begin
 			  dcd_latch_a <= dcd_a;
-			  cts_latch_a <= cts_a;
-			/* cts ... */
+			  cts_latch_a <= 1'b1;
+			end
 		end
 	end
 	always@(posedge clk or posedge reset or posedge reset_b) begin
 		if (reset || reset_b) begin
-			// Initialize latch to match actual signal value (DCD tied to 1)
+			// Initialize latch to match actual signal value
 			dcd_latch_b <= 1;
-			/* cts ... */
+			cts_latch_b <= 1;
 		end else if(cep) begin
-			if (do_latch_b)
+			if (do_latch_b) begin
 			  dcd_latch_b <= dcd_b;
-			/* cts ... */
+			  cts_latch_b <= 1'b1;
+			end
 		end
 	end
 
@@ -1320,8 +1328,13 @@ always@(posedge clk or posedge reset) begin
         end else if (reset_b) begin
                 tx_empty_latch_b <= 1'b1;  // Channel reset: transmitter is empty
     end else begin
-        // Clear when writing data (WR8 via DATA port) or explicit WR8 select
-        if ((wreg_b && rindex_latch == 8) || wr_data_b) begin
+        // Combinational detect of BDATA write (channel B data port)
+        // Clear TXEMPTY immediately on BDATA write
+        if (cs && we && rs[1] && !rs[0]) begin
+            tx_empty_latch_b <= 1'b0;
+        end
+        // Also clear if writing explicit WR8 via control path
+        if (cep && (wreg_b && rindex_latch == 8)) begin
             tx_empty_latch_b <= 1'b0;
         end
         // Set on TX complete (busy 1->0)
@@ -1518,6 +1531,7 @@ reg [23:0] baud_divid_speed_b = 24'd1492;
 wire tx_busy_b;
 wire rx_wr_b;
 wire [30:0] uart_setup_rx_b = { 1'b0, bit_per_char_b, 1'b0, parity_ena_b, 1'b0, parity_even_b, baud_divid_speed_b  } ;
+// Bit 30=1 disables hardware flow control (since we tie CTS to constant)
 wire [30:0] uart_setup_tx_b = { 1'b1, bit_per_char_b, 1'b0, parity_ena_b, 1'b0, parity_even_b, baud_divid_speed_b  } ;
 
 wire auto_echo_b = wr14_b[3];
@@ -1733,12 +1747,9 @@ txuart txuart_a
 	.i_break(1'b0),
 	.i_wr(auto_echo_tx_wr_a),   // Use auto-echo write pulse when in auto-echo mode
 	.i_data(auto_echo_tx_data_a),  // Use auto-echo data when in auto-echo mode
-	//.i_cts_n(~cts),
 	.i_cts_n(1'b0),
 	.o_uart_tx(tx_internal_a),  // Connect to internal signal for loopback
-	.o_busy(tx_busy_a)); // TODO -- do we need this busy line?? probably
-
-	wire cts_a = ~tx_busy_a;
+	.o_busy(tx_busy_a));
 
 // External TX output
 assign txd = tx_internal_a;
@@ -1776,12 +1787,14 @@ txuart txuart_b
 	.o_uart_tx(tx_internal_b),
 	.o_busy(tx_busy_b));
 
-	wire cts_b = ~tx_busy_b;
-
 // External TX output for Channel B
 assign txd_b_out = tx_internal_b;
 
-	// RTS and CTS are active low
-	assign rts = (rx_queue_pos_a > 0);
-	assign wreq=1;
+	// RTS outputs (active low): 0 = ready to receive (FIFO has space), 1 = throttle (FIFO full)
+	assign rts   = (rx_queue_pos_a >= 3);
+	assign rts_b = (rx_queue_pos_b >= 3);
+	assign wreq = 1;
+
+	// Unused external CTS inputs (flow control handled by software/ROM polling RR0)
+	wire _unused_cts = &{1'b0, cts, cts_b, 1'b0};
 endmodule

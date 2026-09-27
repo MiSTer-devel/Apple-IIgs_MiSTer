@@ -234,6 +234,7 @@ module iigs
     input         UART_RXD,
     output        UART_RTS,
     input         UART_CTS,
+    input         serial_port_printer,
 
     // Sim-only: cross-wire SCC channel A<->B (TXD<->RXD) to emulate an
     // external serial loopback cable (for the diagnostic External Serial test).
@@ -2509,18 +2510,40 @@ wire ready_out;
             .speaker_state(speaker_state)
             );
 
-  // SCC (Serial Communications Controller) - Zilog 8530
-  // Apple IIgs port assignment:
-  //   Modem port (Port 1, Slot 1) = SCC Channel B (C038/C03A)
-  //   Printer port (Port 2, Slot 2) = SCC Channel A (C039/C03B)
-  // ROM selftest uses internal loopback (WR14 bit 4), not cross-channel,
-  // so external wiring doesn't affect selftest results.
-  // SCC serial data lines. In --serial-loopback mode each channel's TXD is
-  // routed to the other channel's RXD (what a physical loopback cable does),
-  // so the diagnostic External Serial test can run headlessly.
+  // =========================================================================
+  // SCC (Serial Communications Controller) - Zilog Z8530
+  //
+  // Channel, Slot, and Register Mapping Reference:
+  // - Apple IIgs Hardware Reference (2nd Ed), Chapter 7 "Built-in I/O Ports and Clock"
+  //   (Table 7-10 "SCC I/O Port Addresses", p. 161) and Chapter 8 "Expansion Slots"
+  //   (Slot Register $C02D, pp. 152-154).
+  //
+  // Hardware Architecture & Historical Rationale:
+  //   Channel A -> Printer Port (Port 1 / Slot 1): Command/Status $C039, Data $C03B
+  //   Channel B -> Modem Port   (Port 2 / Slot 2): Command/Status $C038, Data $C03A
+  //
+  // NOTE ON MACINTOSH vs. APPLE IIGS DIFFERENCE:
+  // - On the Macintosh: Channel A is the Modem port and Channel B is the Printer port.
+  // - On the Apple IIgs: Apple assigned Channel A to Slot 1 (Printer Port) and Channel B
+  //   to Slot 2 (Modem Port) to preserve classic Apple II slot conventions:
+  //     Slot 1 = Printer
+  //     Slot 2 = Modem
+  //
+  // OSD Switching (serial_port_printer = status[26]):
+  //   0 = Modem (Slot 2, Channel B) routed to top-level UART pins.
+  //   1 = Printer (Slot 1, Channel A) routed to top-level UART pins.
+  // Both channels have full, symmetric hardware flow control (CTS/RTS):
+  //   - The active channel connects to physical UART_TXD, UART_RXD, UART_RTS, UART_CTS.
+  //   - The inactive channel is safely idled: RXD held high (mark), CTS held low (clear).
+  // In --serial-loopback mode, Channel A and Channel B TXD/RXD and RTS/CTS are cross-wired
+  // (external loopback cable) for diagnostic testing.
+  // =========================================================================
   wire scc_txd_a;
   wire scc_txd_b;
-  assign UART_TXD = scc_txd_b;   // Channel B still drives the MiSTer UART
+  wire scc_rts_a;
+  wire scc_rts_b;
+  assign UART_TXD = serial_port_printer ? scc_txd_a : scc_txd_b;
+  assign UART_RTS = serial_port_printer ? scc_rts_a : scc_rts_b;
 
   scc_iigs_wrapper scc_inst(
             .clk_14m(CLK_14M),
@@ -2534,16 +2557,16 @@ wire ready_out;
             .wdata(scc_din),
             .rdata(scc_dout),
             .irq_n(scc_irq_n),
-            // Channel A = Printer port (no external connection)
+            // Channel A = Printer port (Slot 1)
             .txd_a(scc_txd_a),
-            .rxd_a(serial_loopback ? scc_txd_b : 1'b1),  // loopback: A RX <- B TX
-            .rts_a(),
-            .cts_a(1'b0),       // Always clear to send
-            // Channel B = Modem port → MiSTer UART
+            .rxd_a(serial_loopback ? scc_txd_b : (serial_port_printer ? UART_RXD : 1'b1)),
+            .rts_a(scc_rts_a),
+            .cts_a(serial_loopback ? scc_rts_b : (serial_port_printer ? UART_CTS : 1'b0)),
+            // Channel B = Modem port (Slot 2)
             .txd_b(scc_txd_b),
-            .rxd_b(serial_loopback ? scc_txd_a : UART_RXD),  // loopback: B RX <- A TX
-            .rts_b(UART_RTS),
-            .cts_b(UART_CTS),
+            .rxd_b(serial_loopback ? scc_txd_a : (serial_port_printer ? 1'b1 : UART_RXD)),
+            .rts_b(scc_rts_b),
+            .cts_b(serial_loopback ? scc_rts_a : (serial_port_printer ? 1'b0 : UART_CTS)),
             .dsr_a(1'b0)        // DSR asserted (active low on real hardware)
 				);
 

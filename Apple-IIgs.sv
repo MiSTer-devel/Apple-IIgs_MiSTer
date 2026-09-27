@@ -88,6 +88,7 @@ localparam CONF_STR = {
 	"S3,WOZDSKDO PO NIB2MG,WOZ 5.25;",
 	"-;",
 	"O[14:12],CPU Speed,2.8 MHz (Std),3.6 MHz,4.8 MHz,7.2 MHz,14.3 MHz;",
+	"O[26],Serial Port,Modem (Slot 2),Printer (Slot 1);",
 	"P1,Accelerator;",
 	"P1-;",
 	"P1O[16:15],Card,ZipGS,TransWarp GS,None (OSD speed only);",
@@ -288,6 +289,13 @@ wire osd_irq_delay  = ~status[23];  // 0 = Enabled (visible for all cards: the
                                     // TWGS CDA exposes this one too)
 wire osd_twgs_gfx   = ~status[24];  // 0 = On (TWGS NVRAM config bit2)
 wire osd_twgs_snd   = ~status[25];  // 0 = On (TWGS NVRAM config bit3)
+// Serial port routing selector from OSD menu (status[26]):
+//   0 = Modem (Port 2 / Slot 2, SCC Channel B: $C038/$C03A) routed to MiSTer UART
+//   1 = Printer (Port 1 / Slot 1, SCC Channel A: $C039/$C03B) routed to MiSTer UART
+// Reference: Apple IIgs Hardware Reference Chapter 7 (Built-in I/O Ports) and Chapter 8 (Slot Register $C02D).
+// Note: Classic Apple II assigns Slot 1 = Printer, Slot 2 = Modem. Unlike Macintosh (where Ch A=Modem, Ch B=Printer),
+// Apple IIgs uses SCC Channel A for Slot 1 (Printer) and Channel B for Slot 2 (Modem).
+wire serial_port_printer = status[26]; // 0 = Modem (Slot 2), 1 = Printer (Slot 1)
 
 // OSD status write-back ("the OSD is a live display"): when software (Zip CP
 // via $C059/$C05C/$C05D, TWGS via $BC0000) changes the accelerator state, push
@@ -475,6 +483,7 @@ iigs iigs (
 	.UART_RXD(UART_RXD),
 	.UART_RTS(UART_RTS),
 	.UART_CTS(UART_CTS),
+	.serial_port_printer(serial_port_printer),
 
 	// Keyboard-triggered reset outputs (Ctrl+F11, Ctrl+OpenApple+F11)
 	.keyboard_reset(keyboard_reset),

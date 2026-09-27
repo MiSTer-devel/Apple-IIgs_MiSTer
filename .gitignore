@@ -134,3 +134,6 @@ vsim/*
 
 # ...but the ignores above still apply inside the allowlisted dirs
 vsim/sdram_tb/*.vvp
+
+# Local Quartus output copied to the repo root (releases/*.rbf stay tracked)
+/*.rbf

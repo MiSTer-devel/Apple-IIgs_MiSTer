@@ -3,17 +3,19 @@
 /*
  * Apple IIgs SCC Wrapper
  * 
- * Adapts the existing Mac SCC implementation for Apple IIgs timing and interface
+ * Adapts the Zilog Z8530 SCC implementation for the Apple IIgs architecture.
  * 
- * Clock Domain Adaptation:
- * - Mac: 32MHz master -> 8MHz SCC clock (via enables)  
- * - IIgs: 14.32MHz master -> ~3.58MHz SCC clock (divide by 4)
- * 
- * Register Mapping:
- * C038: SCC B Control (Port B Command/Status)
- * C039: SCC A Control (Port A Command/Status) 
- * C03A: SCC B Data (Port B Data)
- * C03B: SCC A Data (Port A Data)
+ * Channel and Slot Mapping Reference:
+ * - Apple IIgs Hardware Reference, Chapter 7 (Built-in I/O Ports) and Chapter 8 (Slot Register $C02D).
+ *
+ * NOTE ON MACINTOSH vs. APPLE IIGS DIFFERENCE:
+ * - On the Macintosh: Channel A is the Modem port and Channel B is the Printer port.
+ * - On the Apple IIgs: Apple assigned Channel A to Slot 1 (Printer Port) and Channel B to Slot 2 (Modem Port)
+ *   to preserve classic Apple II slot conventions (Slot 1 = Printer, Slot 2 = Modem):
+ *     $C038: SCC Channel B Control (Modem Port / Slot 2 Command/Status)
+ *     $C039: SCC Channel A Control (Printer Port / Slot 1 Command/Status) 
+ *     $C03A: SCC Channel B Data    (Modem Port / Slot 2 Data FIFO)
+ *     $C03B: SCC Channel A Data    (Printer Port / Slot 1 Data FIFO)
  */
 
 module scc_iigs_wrapper
@@ -122,15 +124,17 @@ scc scc_inst (
 `endif
     ._irq(scc_internal_irq_n),          // Internal SCC interrupt
     
-    // Serial connections - Channel A
+    // Serial connections - Channel A (Printer Port / Slot 1)
     .rxd(rxd_a),                        // Channel A receive
     .txd(txd_a),                        // Channel A transmit
-    .cts(cts_a),                        // Clear to send from external device
-    .rts(rts_a),                        // Request to send to external device
+    .cts(cts_a),                        // Clear to send from external device (active low: 0 = clear)
+    .rts(rts_a),                        // Request to send to external device (active low: 0 = ready)
 
-    // Serial connections - Channel B (for external loopback testing)
+    // Serial connections - Channel B (Modem Port / Slot 2)
     .rxd_b(rxd_b),                      // Channel B receive
     .txd_b_out(txd_b),                  // Channel B transmit
+    .cts_b(cts_b),                      // Clear to send from external device (active low: 0 = clear)
+    .rts_b(rts_b),                      // Request to send to external device (active low: 0 = ready)
 
     // DCD inputs (used for mouse on real IIgs, stubbed high = carrier detect)
     .dcd_a(1'b1),
@@ -140,9 +144,6 @@ scc scc_inst (
     .wreq()
 );
 `endif
-
-// Channel B RTS mirrors Channel A for now (could be extended if needed)
-assign rts_b = rts_a;
 
 // Interrupt control: Enable SCC interrupts properly
 // Connect the actual SCC interrupt signal so the SCC can function correctly
