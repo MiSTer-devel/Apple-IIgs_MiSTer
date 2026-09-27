@@ -65,6 +65,12 @@ module emu (
         // Sim-only: cross-wire SCC channels as an external serial loopback cable
         input serial_loopback,
 
+        // Sim-only serial tap (--serial-port / --serial-out): OSD Serial Port
+        // selector (0=Modem/ch B, 1=Printer/ch A) and the resulting MiSTer UART
+        // TX pin, decoded to a file by sim_main.cpp
+        input serial_port_printer,
+        output uart_txd,
+
         // CPU speed control (--speed flag): 0=native 2.86MHz .. 4=14.32MHz.
         // Shares state with the ZipGS $C058-$C05F software interface.
         input [2:0] host_speed,
@@ -123,6 +129,7 @@ wire [15:0] joystick_a0 =  joystick_l_analog_0;
 
 wire UART_RTS;
 wire UART_TXD;
+assign uart_txd = UART_TXD;
 // UART inputs: RXD idle (mark=1), CTS asserted (clear to send=0)
 wire UART_RXD = 1'b1;
 wire UART_CTS = 1'b0;
@@ -363,6 +370,7 @@ iigs  iigs(
         .ps2_mouse(ps2_mouse),
         .selftest_override(selftest_override),
         .serial_loopback(serial_loopback),
+        .serial_port_printer(serial_port_printer),
         .host_speed(host_speed),
         .accel_capable(1'b1),  // sim fast RAM is single-cycle BRAM: all speed steps safe
         .zip_regs_en(1'b1),    // ZipGS software interface always present in sim
@@ -427,7 +435,7 @@ iigs  iigs(
         .AUDIO_L(AUDIO_L),
         .AUDIO_R(AUDIO_R),
 
-        // Serial (SCC Channel A = Modem port)
+        // Serial (SCC Channel B = Modem by default with serial_port_printer=0; Channel A = Printer when 1)
         .UART_TXD(UART_TXD),
         .UART_RXD(UART_RXD),
         .UART_RTS(UART_RTS),

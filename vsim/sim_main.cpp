@@ -211,6 +211,76 @@ vluint64_t selftest_start_time = 0;
 
 // --serial-loopback: cross-wire SCC channel A<->B (external loopback cable)
 bool serial_loopback_flag = false;
+
+// --serial-port / --serial-out / --serial-baud: software 8N1 receiver on the
+// MiSTer UART TX pin (after the OSD Printer/Modem selector), so a print job can
+// be captured to a file and replayed through mister_printerd by hand.
+bool serial_port_printer_flag = false;     // false = Modem (ch B), true = Printer (ch A)
+FILE* serial_out_file = nullptr;
+const char* serial_out_path = nullptr;
+int serial_baud = 9600;
+const double SERIAL_CLK_HZ = 14318181.0;  // CLK_14M: the SCC baud generator's clock
+
+struct SerialRx {
+	enum { IDLE, START, DATA, STOP } state = IDLE;
+	double next_sample = 0;   // CLK_14M edge count of the next bit-center sample
+	int bit = 0;
+	uint8_t shift = 0;
+	long bytes = 0;
+	long framing_errors = 0;
+	int last_txd = 1;
+} serial_rx;
+
+// Called on every CLK_14M rising edge
+static void serial_rx_clock(uint64_t tick, int txd)
+{
+	const double bit_ticks = SERIAL_CLK_HZ / serial_baud;
+	switch (serial_rx.state) {
+	case SerialRx::IDLE:
+		if (serial_rx.last_txd && !txd) {           // falling edge = start bit
+			serial_rx.next_sample = tick + bit_ticks / 2;
+			serial_rx.state = SerialRx::START;
+		}
+		break;
+	case SerialRx::START:
+		if (tick >= serial_rx.next_sample) {
+			if (txd) {                                // glitch, not a start bit
+				serial_rx.state = SerialRx::IDLE;
+			} else {
+				serial_rx.next_sample += bit_ticks;
+				serial_rx.bit = 0;
+				serial_rx.shift = 0;
+				serial_rx.state = SerialRx::DATA;
+			}
+		}
+		break;
+	case SerialRx::DATA:
+		if (tick >= serial_rx.next_sample) {
+			serial_rx.shift |= (txd ? 1 : 0) << serial_rx.bit;   // LSB first
+			serial_rx.next_sample += bit_ticks;
+			if (++serial_rx.bit == 8) serial_rx.state = SerialRx::STOP;
+		}
+		break;
+	case SerialRx::STOP:
+		if (tick >= serial_rx.next_sample) {
+			if (!txd) serial_rx.framing_errors++;
+			fputc(serial_rx.shift, serial_out_file);
+			fflush(serial_out_file);
+			serial_rx.bytes++;
+			serial_rx.state = SerialRx::IDLE;
+		}
+		break;
+	}
+	serial_rx.last_txd = txd;
+}
+
+static void serial_rx_report()
+{
+	if (serial_out_file)
+		printf("SERIAL_OUT: %ld bytes (%ld framing errors) from %s port at %d baud -> %s\n",
+		       serial_rx.bytes, serial_rx.framing_errors,
+		       serial_port_printer_flag ? "printer" : "modem", serial_baud, serial_out_path);
+}
 const vluint64_t SELFTEST_OVERRIDE_DURATION = 10000000; // 10 seconds in simulation time (much longer)
 
 // HPS emulator
@@ -411,6 +481,7 @@ void resetSim() {
 bool stop_on_log_mismatch = 1;
 bool debug_6502 = 1;
 bool quiet_mode = false;  // Suppress CPU trace to stdout
+int trace_after_frame = -1;  // --trace-after: leave quiet mode at this frame
 int cpu_sync;
 long cpu_instruction_count;
 int cpu_clock;
@@ -1200,6 +1271,7 @@ int verilate() {
 		// Set self-test override signal to hardware
 		top->selftest_override = selftest_override_active ? 1 : 0;
 		top->serial_loopback = serial_loopback_flag ? 1 : 0;
+		top->serial_port_printer = serial_port_printer_flag ? 1 : 0;
 
 		// CPU speed step (--speed). Level signal; zipgs_regs applies it on change.
 		// --speed-after <frame>:<code> models the REAL MiSTer boot, where the
@@ -4058,6 +4130,9 @@ int verilate() {
 		// frame-gated headless run: they "timed out" at frame 0 while the
 		// machine ran fine underneath, and screenshot copies picked up
 		// stale files from earlier windowed runs.
+        if (serial_out_file && CLK_14M.IsRising())
+            serial_rx_clock(g_tick14, top->uart_txd);
+
         if (CLK_14M.IsRising() && top->CE_PIXEL) {
             uint32_t colour = 0xFF000000 | top->VGA_B << 16 | top->VGA_G << 8 | top->VGA_R;
             video.Clock(top->VGA_HB, top->VGA_VB, top->VGA_HS, top->VGA_VS, colour);
@@ -4406,8 +4481,13 @@ void queue_key_string(const std::string& keys) {
             AsciiToPS2 m = ascii_to_ps2(combo);
             if (m.scancode != 0xFF) {
                 input.keyEvents.push(SimInput_PS2KeyEvent(LALT_PS2, true, false, LALT_PS2));
+                // Shifted combos (e.g. Apple-! for desk accessories) need Shift held too
+                if (m.needs_shift)
+                    input.keyEvents.push(SimInput_PS2KeyEvent(SHIFT_SCANCODE, true, false, SHIFT_SCANCODE));
                 input.keyEvents.push(SimInput_PS2KeyEvent(m.scancode, true, false, m.scancode));
                 input.keyEvents.push(SimInput_PS2KeyEvent(m.scancode, false, false, m.scancode));
+                if (m.needs_shift)
+                    input.keyEvents.push(SimInput_PS2KeyEvent(SHIFT_SCANCODE, false, false, SHIFT_SCANCODE));
                 input.keyEvents.push(SimInput_PS2KeyEvent(LALT_PS2, false, false, LALT_PS2));
                 printf("Queued Open-Apple+'%c' sequence\n", combo);
             }
@@ -4673,12 +4753,16 @@ void show_help() {
 	printf("  --rom <1|3|rom1|rom3>         Select ROM version (default: rom3)\n");
 	printf("  --selftest                    Enable self-test mode\n");
 	printf("  --serial-loopback             Cross-wire SCC ports A<->B (external loopback cable)\n");
+	printf("  --serial-port <modem|printer> OSD Serial Port selector (default modem = SCC ch B)\n");
+	printf("  --serial-out <file>           Decode the MiSTer UART TX pin (8N1) into <file>\n");
+	printf("  --serial-baud <n>             Baud rate for --serial-out (default 9600)\n");
 	printf("  --speed <step|MHz>            CPU accelerator speed: 0-4 or 2.8/3.6/4.8/7.2/14.3 (MHz).\n");
 	printf("                                Fast cycles only; I/O + banks E0/E1 stay 1 MHz (ZipGS-style).\n");
 	printf("                                Shares state with the ZipGS $C058-$C05F software interface.\n");
 	printf("  --no-cpu-log                  Disable CPU log storage in memory (saves memory)\n");
 	printf("  --fixed-time [epoch]          Deterministic RTC (default 1986-09-15); for regression\n");
 	printf("  --quiet                       Suppress CPU instruction trace to stdout (faster)\n");
+	printf("  --trace-after <frame>         Quiet until <frame>, then print the CPU trace\n");
 	printf("  --disk <filename>             Use specified HDD image (slot 7 unit 0, no disk mounted by default)\n");
 	printf("  --disk2 <filename>            Use specified HDD image for slot 7 unit 1\n");
 	printf("  --woz <filename>              Floppy image: .woz, or .po/.dsk/.do/.nib/.2mg (auto-converted to WOZ)\n");
@@ -4935,6 +5019,20 @@ int main(int argc, char** argv, char** env) {
 		} else if (strcmp(argv[i], "--serial-loopback") == 0) {
 			serial_loopback_flag = true;
 			printf("Serial loopback enabled - SCC channels A<->B cross-wired (external loopback cable)\n");
+		} else if (strcmp(argv[i], "--serial-port") == 0 && i + 1 < argc) {
+			const char* p = argv[++i];
+			if (strcmp(p, "printer") == 0) serial_port_printer_flag = true;
+			else if (strcmp(p, "modem") == 0) serial_port_printer_flag = false;
+			else { fprintf(stderr, "Error: --serial-port takes 'printer' or 'modem'\n"); return 1; }
+		} else if (strcmp(argv[i], "--serial-baud") == 0 && i + 1 < argc) {
+			serial_baud = atoi(argv[++i]);
+			if (serial_baud <= 0) { fprintf(stderr, "Error: bad --serial-baud\n"); return 1; }
+		} else if (strcmp(argv[i], "--serial-out") == 0 && i + 1 < argc) {
+			serial_out_path = argv[++i];
+			serial_out_file = fopen(serial_out_path, "wb");
+			if (!serial_out_file) { perror(serial_out_path); return 1; }
+			atexit(serial_rx_report);
+			printf("Capturing MiSTer UART TX to %s\n", serial_out_path);
 		} else if (strcmp(argv[i], "--fixed-time") == 0) {
 			if (i + 1 < argc && argv[i+1][0] >= '0' && argv[i+1][0] <= '9') {
 				fixed_time = (time_t)atoll(argv[++i]);
@@ -4944,6 +5042,10 @@ int main(int argc, char** argv, char** env) {
 		} else if (strcmp(argv[i], "--no-cpu-log") == 0) {
 			debug_6502 = false;
 			printf("CPU log memory storage disabled to save memory (stdout traces still enabled)\n");
+		} else if (strcmp(argv[i], "--trace-after") == 0 && i + 1 < argc) {
+			trace_after_frame = atoi(argv[++i]);
+			quiet_mode = true;
+			printf("CPU trace suppressed until frame %d\n", trace_after_frame);
 		} else if (strcmp(argv[i], "--quiet") == 0) {
 			quiet_mode = true;
 			printf("Quiet mode enabled - CPU instruction trace suppressed\n");
@@ -5293,6 +5395,7 @@ int main(int argc, char** argv, char** env) {
            RunBatch(4096);
            if (video.count_frame != last_logged_frame) {
                printf("Frame: %d\n", video.count_frame);
+               if (trace_after_frame >= 0 && video.count_frame >= trace_after_frame) quiet_mode = false;
                last_logged_frame = video.count_frame;
                // Handle key injections
                if (!key_injections.empty()) {
