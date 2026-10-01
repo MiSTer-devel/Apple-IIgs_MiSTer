@@ -4754,6 +4754,7 @@ void show_help() {
 	printf("  --selftest                    Enable self-test mode\n");
 	printf("  --serial-loopback             Cross-wire SCC ports A<->B (external loopback cable)\n");
 	printf("  --serial-port <modem|printer> OSD Serial Port selector (default modem = SCC ch B)\n");
+	printf("  --printer                     Same as --serial-port printer\n");
 	printf("  --serial-out <file>           Decode the MiSTer UART TX pin (8N1) into <file>\n");
 	printf("  --serial-baud <n>             Baud rate for --serial-out (default 9600)\n");
 	printf("  --speed <step|MHz>            CPU accelerator speed: 0-4 or 2.8/3.6/4.8/7.2/14.3 (MHz).\n");
@@ -5024,6 +5025,8 @@ int main(int argc, char** argv, char** env) {
 			if (strcmp(p, "printer") == 0) serial_port_printer_flag = true;
 			else if (strcmp(p, "modem") == 0) serial_port_printer_flag = false;
 			else { fprintf(stderr, "Error: --serial-port takes 'printer' or 'modem'\n"); return 1; }
+		} else if (strcmp(argv[i], "--printer") == 0) {
+			serial_port_printer_flag = true;          // older spelling of --serial-port printer
 		} else if (strcmp(argv[i], "--serial-baud") == 0 && i + 1 < argc) {
 			serial_baud = atoi(argv[++i]);
 			if (serial_baud <= 0) { fprintf(stderr, "Error: bad --serial-baud\n"); return 1; }
