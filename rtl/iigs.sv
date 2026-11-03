@@ -304,6 +304,9 @@ module iigs
    
   logic [7:0]         bank_bef;
   logic [15:0]        addr_bef;
+  // Banks in which $C000-$C00F writes change the IIe soft switches. IO already
+  // limits the banks that reach I/O; E1 is excluded pending a hardware result.
+  wire                iie_switch_bank = (bank_bef != 8'he1);
 
   logic [23:0]        cpu_addr;
   logic [7:0]         cpu_dout;
@@ -763,11 +766,11 @@ module iigs
           12'h05c, 12'h05d, 12'h05e, 12'h05f:
             if (zip_unlocked) io_dout = zip_rdata;
 
-          12'h029: io_dout = NEWVIDEO;
+          12'h029: io_dout = NEWVIDEO & 8'hE1;   // bits 1-4 read 0 (physical ROM 01/03)
           12'h02a: io_dout = 'h0; // from gsplus
           12'h02b: io_dout = C02BVAL; // from gsplus
           12'h02c: io_dout = 'h0; // from gsplus
-          12'h02d: io_dout = SLTROMSEL;
+          12'h02d: io_dout = SLTROMSEL;          // stored masked with $F6 (bits 0,3 read 0)
           12'h02e: io_dout = V_M2[8:1];
           12'h02f: io_dout = {V_M2[0], H_CHAR};  // VA (V[0]) + Mega II horiz counter, per TN.IIGS.039
           12'h031: io_dout = DISK35;
@@ -926,43 +929,45 @@ module iigs
         // write
         begin
           case (addr[11:0])
-            // Apple II compatibility soft switches ($C000-$C00F)
-            // These should ONLY respond to bank $00 and $E0 accesses, NOT bank $01/$E1
-            // This prevents MVN/MVP block moves through bank $01 I/O space from corrupting state
+            // Apple II compatibility soft switches ($C000-$C00F).
+            // Physical ROM 01/03 MMUPROBE captures: a write to $C005 through bank 01
+            // (either CYAREG[4]) or through banks 02-7F with CYAREG[4]=1 sets RAMWRT,
+            // so these respond in every bank where IO is decoded. Bank E1 stays
+            // excluded only because it is unmeasured (see iie_switch_bank).
 `ifdef DEBUG_IO
-            12'h000: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**STORE80 %x",0); STORE80<= 1'b0 ; end end
-            12'h001: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**STORE80 %x",1); STORE80<= 1'b1 ; end end
-            12'h002: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**RAMRD %x",0); RAMRD<= 1'b0 ; end end
-            12'h003: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**RAMRD %x",1); RAMRD<= 1'b1 ; end end
-            12'h004: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**RAMWRT %x",0); RAMWRT<= 1'b0 ; end end
-            12'h005: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**RAMWRT %x",1); RAMWRT<= 1'b1 ; end end
-            12'h006: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**INTCXROM %x",0);INTCXROM<= 1'b0; end end
-            12'h007: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**INTCXROM %x",1);INTCXROM <= 1'b1; end end
-            12'h008: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**ALTZP %x",0); ALTZP<= 1'b0; end end
-            12'h009: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**ALTZP %x",1); ALTZP<= 1'b1; end end
-            12'h00A: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**SLOTC3ROM %x",0);SLOTC3ROM<= 1'b0; end end
-            12'h00B: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**SLOTC3ROM %x",1);SLOTC3ROM<= 1'b1; end end
-            12'h00C: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**EIGHTYCOL %x",0); EIGHTYCOL<= 1'b0; end end
-            12'h00D: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**EIGHTYCOL %x",1); EIGHTYCOL<= 1'b1; end end
-            12'h00E: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**ALTCHARSET %x",0); ALTCHARSET<= 1'b0; end end
-            12'h00F: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**ALTCHARSET %x",1); ALTCHARSET<= 1'b1; end end
+            12'h000: begin if (iie_switch_bank) begin $display("**STORE80 %x",0); STORE80<= 1'b0 ; end end
+            12'h001: begin if (iie_switch_bank) begin $display("**STORE80 %x",1); STORE80<= 1'b1 ; end end
+            12'h002: begin if (iie_switch_bank) begin $display("**RAMRD %x",0); RAMRD<= 1'b0 ; end end
+            12'h003: begin if (iie_switch_bank) begin $display("**RAMRD %x",1); RAMRD<= 1'b1 ; end end
+            12'h004: begin if (iie_switch_bank) begin $display("**RAMWRT %x",0); RAMWRT<= 1'b0 ; end end
+            12'h005: begin if (iie_switch_bank) begin $display("**RAMWRT %x",1); RAMWRT<= 1'b1 ; end end
+            12'h006: begin if (iie_switch_bank) begin $display("**INTCXROM %x",0);INTCXROM<= 1'b0; end end
+            12'h007: begin if (iie_switch_bank) begin $display("**INTCXROM %x",1);INTCXROM <= 1'b1; end end
+            12'h008: begin if (iie_switch_bank) begin $display("**ALTZP %x",0); ALTZP<= 1'b0; end end
+            12'h009: begin if (iie_switch_bank) begin $display("**ALTZP %x",1); ALTZP<= 1'b1; end end
+            12'h00A: begin if (iie_switch_bank) begin $display("**SLOTC3ROM %x",0);SLOTC3ROM<= 1'b0; end end
+            12'h00B: begin if (iie_switch_bank) begin $display("**SLOTC3ROM %x",1);SLOTC3ROM<= 1'b1; end end
+            12'h00C: begin if (iie_switch_bank) begin $display("**EIGHTYCOL %x",0); EIGHTYCOL<= 1'b0; end end
+            12'h00D: begin if (iie_switch_bank) begin $display("**EIGHTYCOL %x",1); EIGHTYCOL<= 1'b1; end end
+            12'h00E: begin if (iie_switch_bank) begin $display("**ALTCHARSET %x",0); ALTCHARSET<= 1'b0; end end
+            12'h00F: begin if (iie_switch_bank) begin $display("**ALTCHARSET %x",1); ALTCHARSET<= 1'b1; end end
 `else
-            12'h000: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin STORE80<= 1'b0 ; end end
-            12'h001: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin STORE80<= 1'b1 ; end end
-            12'h002: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin RAMRD<= 1'b0 ; end end
-            12'h003: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin RAMRD<= 1'b1 ; end end
-            12'h004: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin RAMWRT<= 1'b0 ; end end
-            12'h005: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin RAMWRT<= 1'b1 ; end end
-            12'h006: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin INTCXROM<= 1'b0; end end
-            12'h007: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin INTCXROM <= 1'b1; end end
-            12'h008: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin ALTZP<= 1'b0; end end
-            12'h009: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin ALTZP<= 1'b1; end end
-            12'h00A: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin SLOTC3ROM<= 1'b0; end end
-            12'h00B: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin SLOTC3ROM<= 1'b1; end end
-            12'h00C: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin EIGHTYCOL<= 1'b0; end end
-            12'h00D: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin EIGHTYCOL<= 1'b1; end end
-            12'h00E: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin ALTCHARSET<= 1'b0; end end
-            12'h00F: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin ALTCHARSET<= 1'b1; end end
+            12'h000: begin if (iie_switch_bank) begin STORE80<= 1'b0 ; end end
+            12'h001: begin if (iie_switch_bank) begin STORE80<= 1'b1 ; end end
+            12'h002: begin if (iie_switch_bank) begin RAMRD<= 1'b0 ; end end
+            12'h003: begin if (iie_switch_bank) begin RAMRD<= 1'b1 ; end end
+            12'h004: begin if (iie_switch_bank) begin RAMWRT<= 1'b0 ; end end
+            12'h005: begin if (iie_switch_bank) begin RAMWRT<= 1'b1 ; end end
+            12'h006: begin if (iie_switch_bank) begin INTCXROM<= 1'b0; end end
+            12'h007: begin if (iie_switch_bank) begin INTCXROM <= 1'b1; end end
+            12'h008: begin if (iie_switch_bank) begin ALTZP<= 1'b0; end end
+            12'h009: begin if (iie_switch_bank) begin ALTZP<= 1'b1; end end
+            12'h00A: begin if (iie_switch_bank) begin SLOTC3ROM<= 1'b0; end end
+            12'h00B: begin if (iie_switch_bank) begin SLOTC3ROM<= 1'b1; end end
+            12'h00C: begin if (iie_switch_bank) begin EIGHTYCOL<= 1'b0; end end
+            12'h00D: begin if (iie_switch_bank) begin EIGHTYCOL<= 1'b1; end end
+            12'h00E: begin if (iie_switch_bank) begin ALTCHARSET<= 1'b0; end end
+            12'h00F: begin if (iie_switch_bank) begin ALTCHARSET<= 1'b1; end end
 `endif
             12'h010, 12'h026, 12'h027, 12'h070: begin
               // Note: $C010 (key strobe clear) now handled directly by ADB module
@@ -1005,9 +1010,9 @@ module iigs
 `endif
             12'h02b: C02BVAL <= dout; // from gsplus
 `ifdef DEBUG_IO
-            12'h02d: begin SLTROMSEL <= dout; $display("**SLTROMSEL <= %02x (slot7_external=%0d)", dout, dout[7]); end
+            12'h02d: begin SLTROMSEL <= dout & 8'hF6; $display("**SLTROMSEL <= %02x (slot7_external=%0d)", dout, dout[7]); end
 `else
-            12'h02d: begin SLTROMSEL <= dout; end
+            12'h02d: begin SLTROMSEL <= dout & 8'hF6; end  // bits 0,3 not implemented: physical capture reads v & F6, and C02D.3 does not change slot 3
 `endif
             12'h030: begin if (phi2) speaker_state <= ~speaker_state; end
             12'h031: begin
@@ -1872,8 +1877,10 @@ vgc vgc(
 
 
 
-// Floating bus: reads from non-existent RAM banks return the bank number
-wire [7:0] floating_bus = (bank_bef >= RAMSIZE && bank_bef < 8'hE0) ? bank_bef : 8'h80;
+// Floating bus: reads from non-existent RAM banks return the bank number.
+// On ROM 01, banks FC/FD are unpopulated and read the same way (physical capture).
+wire [7:0] floating_bus = ((bank_bef >= RAMSIZE && bank_bef < 8'hE0) ||
+                           (rom_select && (bank_bef == 8'hFC || bank_bef == 8'hFD))) ? bank_bef : 8'h80;
 
 wire [7:0] din =
   (io_select[7] == 1'b1 | device_select[7] == 1'b1 | (hdd_dma & hdd_dma_we)) ? HDD_DO :
