@@ -391,6 +391,11 @@ module iigs
   logic               INTCXROM;
   logic               ALTZP;
   logic               SLOTC3ROM;
+  // INTC8ROM: internal ROM owns $C800-$CFFF. Set by a valid CPU access to
+  // $C3xx while SLOTC3ROM=0, cleared by any access to $CFFF or by reset.
+  // Measured on physical ROM 01/03: $C1xx/$C7xx accesses do not set it,
+  // a later $C1xx access does not clear it, and C02D bit 3 has no effect.
+  logic               INTC8ROM;
   //logic               EIGHTYCOL;
   //logic               ALTCHARSET;
   //logic PAGE2;
@@ -500,6 +505,8 @@ module iigs
     .bank_latch(NEWVIDEO[0]),
     .shadow_all(CYAREG[4]),
     .SLTROMSEL(SLTROMSEL),
+    .INTCXROM(INTCXROM),
+    .INTC8ROM(INTC8ROM),
 
     .dbg_wdata(dout),
     .dbg_cpu_addr(cpu_addr),
@@ -1877,6 +1884,15 @@ vgc vgc(
 
 
 
+// $C800-$CFFF with no owner (INTCXROM=0, INTC8ROM=0): no card drives the
+// bus, so the read returns the Mega II floating-bus byte (physical captures
+// show varying video/bus data here).
+wire c8_slot_bank = ((bank_bef == 8'h00 || bank_bef == 8'h01) && !shadow[6]) ||
+                    bank_bef == 8'he0 || bank_bef == 8'he1;
+wire c800_float = ~we && c8_slot_bank && addr_bef >= 16'hc800 && addr_bef <= 16'hcfff && ~rom_ce;
+wire [7:0] mega2_float = !m2_bus_driven ? cpu_last_bus :
+                         (NEWVIDEO[7] && shr_pix_win) ? shr_bus_byte : video_data;
+
 // Floating bus: reads from non-existent RAM banks return the bank number.
 // On ROM 01, banks FC/FD are unpopulated and read the same way (physical capture).
 wire [7:0] floating_bus = ((bank_bef >= RAMSIZE && bank_bef < 8'hE0) ||
@@ -1887,6 +1903,7 @@ wire [7:0] din =
   (fastram_ce | rom_ce) ?  top_din :
   slowram_ce ? slowram_dout :
   slot_ce ? slot_dout :
+  c800_float ? mega2_float :
   floating_bus;
 
   wire [7:0] HDD_DO;
@@ -1911,6 +1928,17 @@ wire [7:0] din =
   // Last byte the CPU transferred on its data bus (operand fetches included):
   // the value a floating-bus read sees when the Mega II is not driving.
   always @(posedge CLK_14M) if (phi2) cpu_last_bus <= we ? dout : cpu_din;
+
+  always @(posedge CLK_14M) begin
+    if (reset)
+      INTC8ROM <= 1'b0;
+    else if (phi2 && valid && ~hdd_dma && c8_slot_bank) begin
+      if (addr_bef == 16'hcfff)
+        INTC8ROM <= 1'b0;
+      else if (addr_bef[15:8] == 8'hc3 && ~SLOTC3ROM)
+        INTC8ROM <= 1'b1;
+    end
+  end
 
 `ifdef DEBUG_VERBOSE
   // Debug: log every C026 read showing what cpu_din resolves to

@@ -65,6 +65,8 @@ module mmu #(
     input  wire        bank_latch,    // NEWVIDEO[0]: 1 = E1 distinct from E0
     input  wire        shadow_all,    // CYAREG[4]: shadow video pages in all banks
     input  wire [7:0]  SLTROMSEL,     // $C02D slot ROM select
+    input  wire        INTCXROM,      // $C007: internal ROM for all of $C100-$CFFF
+    input  wire        INTC8ROM,      // internal ROM owns $C800-$CFFF (set by $C3xx, cleared by $CFFF)
 
     // Simulation debug only (referenced by `ifdef debug $display; unused in synthesis)
     input  wire [7:0]  dbg_wdata,
@@ -212,24 +214,22 @@ module mmu #(
   // The language-card ROM windows ($D000-$DFFF, $E000-$FFFF under RDROM) apply
   // to bank 01 exactly like bank 00 (shadow[6] IOLC control covers both banks).
   wire lc_rom_bank = (bank_log == 8'h00 || bank_log == 8'h01);
+  wire c800_window = (addr_log >= 16'hc800) && (addr_log <= 16'hcfff) &&
+                     ((lc_rom_bank && !shadow[6]) || bank_log == 8'he0 || bank_log == 8'he1);
   assign rom2_ce = (bank_log == 8'hff) || vec_fetch_force_rom_ce ||
                    (lc_rom_bank & addr_log >= 16'hd000 & addr_log <= 16'hdfff && (RDROM | ~vpb_n) && !shadow[6]) ||
                    (bank_log == 8'h0 & addr_log >= 16'hc000 & addr_log < 16'hc100 && (RDROM | ~vpb_n) && !shadow[6]) ||  // I/O ($C000-$C0FF) - only when IOLC not inhibited
-                   // $C800-$CFFF: slot expansion ROM. On real hardware this maps to
-                   // the expansion ROM of whichever slot most recently had $CN00
-                   // accessed (cleared by reading $CFFF). We don't model external slot
-                   // cards — every slot in this sim points at internal IIgs firmware —
-                   // so routing $C800-$CFFF to internal ROM unconditionally (when IOLC
-                   // is not inhibited) matches every observable behavior. Previously we
-                   // gated on (RDROM | ~VPB), which broke games that do JSR $C300 /
-                   // JMP $C803 with both RDROM=0 and INTCXROM=0 (e.g. A Mind Forever
-                   // Voyaging) — they'd read $C803 as RAM = 0x00 and BRK into the
-                   // monitor at frame ~430.
-                   // Same window in bank 01 and in the Mega II banks E0/E1 (physical
-                   // capture: E0:C800 with INTCXROM=1 returns internal ROM; the old
-                   // decode read E0 slow RAM, which is LC storage).
-                   (lc_rom_bank & addr_log >= 16'hc800 & addr_log <= 16'hcfff && !shadow[6]) ||  // Expansion ($C800-$CFFF)
-                   ((bank_log == 8'he0 || bank_log == 8'he1) && addr_log >= 16'hc800 && addr_log <= 16'hcfff) ||
+                   // $C800-$CFFF: expansion ROM. No external card here has C800 ROM,
+                   // so only internal ROM can own the window. Software that does
+                   // JSR $C300 / JMP $C803 with INTCXROM=0 (e.g. A Mind Forever
+                   // Voyaging) works because the $C3xx access sets INTC8ROM; gating
+                   // on (RDROM | ~VPB) once broke it (BRK at frame ~430).
+                   // Physical ROM 01/03 MMUPROBE captures: internal ROM appears at
+                   // $C800-$CFFF only under INTCXROM or after a $C3xx access with
+                   // SLOTC3ROM=0 (INTC8ROM); otherwise the read floats. $CFFF itself
+                   // is internal ROM only under INTCXROM (the access releases INTC8ROM).
+                   // This applies in banks 00/01 (IOLC mapped) and E0/E1.
+                   (c800_window && (INTCXROM || (INTC8ROM && addr_log != 16'hcfff))) ||
                    // Note: $C100-$C7FF (slot ROM) deliberately NOT included here - handled by slot_internalrom_ce/slot_ce
                    (lc_rom_bank & addr_log >= 16'he000 &                          (RDROM | ~vpb_n) && !shadow[6]) ||
                    (bank_log == 8'h0 & addr_log >= 16'hc070 & addr_log <= 16'hc07f && !shadow[6]) ||
@@ -269,9 +269,9 @@ module mmu #(
   wire video_shadow = txt1_shadow || txt2_shadow || shr_master_shadow || hgr_shadow;
 
   // Slot ROM / expansion space $C100-$CFFF while I/O is mapped in. These
-  // addresses are never RAM, but their physical cells hold LC $Dxxx bank-2
-  // data (A12 fold). Writes must not reach RAM in any of the four banks, and
-  // E0/E1 reads must come from ROM/slots rather than slow RAM.
+  // addresses are never RAM: reads come from internal ROM, a slot, or the
+  // floating bus, and their physical cells hold LC $Dxxx bank-2 data (A12
+  // fold) that writes must not touch.
   wire slot_space = (addr_log >= 16'hc100) && (addr_log < 16'hd000) &&
                     ( ((bank_log == 8'h00 || bank_log == 8'h01) && !shadow[6]) ||
                       bank_log == 8'he0 || bank_log == 8'he1 );
@@ -280,7 +280,7 @@ module mmu #(
     fastram_ce = 0;
     slowram_ce = 0;
 
-    if (slot_space && (we || bank_log == 8'he0 || bank_log == 8'he1)) begin
+    if (slot_space) begin
       fastram_ce = 0;
       slowram_ce = 0;
     end else if (IO || EXTERNAL_IO) begin

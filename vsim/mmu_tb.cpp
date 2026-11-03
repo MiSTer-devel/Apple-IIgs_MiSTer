@@ -50,6 +50,9 @@ static const bool FIX_SHADOW_BY_PHYS_BANK = true;
 //     IOLC, E0/E1) or for E0/E1 reads; E0/E1 and bank 01 $C800-$CFFF read
 //     internal ROM like bank 00. Old RTL read/wrote E0 slow RAM (LC storage).
 static const bool FIX_SLOT_SPACE = true;
+// D9: $C800-$CFFF is internal ROM only under INTCXROM, or under INTC8ROM
+//     except $CFFF itself (physical ROM 01/03 captures); otherwise it floats.
+//     Old RTL mapped bank-00 $C800-$CFFF to ROM unconditionally.
 // D8: banks FC/FD are unpopulated on ROM 01 (rom_select=1).
 static const bool FIX_ROM01_FCFD = true;
 // D5: LC write-protect (LC_WE=0) must discard writes to $D000-$FFFF in banks
@@ -65,6 +68,7 @@ struct In {
     bool ALTZP, RAMRD, RAMWRT, STORE80, PAGE2, HIRES;
     bool bank_latch, shadow_all;
     uint8_t SLTROMSEL;
+    bool INTCXROM, INTC8ROM;
 };
 
 struct Out {
@@ -169,8 +173,9 @@ static Out ref_mmu(const In& s)
     o.rom2_ce = (b == 0xFF) || vec
         || (lc_rom_bank && a >= 0xD000 && a <= 0xDFFF && rd_or_vec && !sh6)
         || (b == 0x00 && a >= 0xC000 && a <  0xC100 && rd_or_vec && !sh6)
-        || ((b == 0x00 || (FIX_SLOT_SPACE && b == 0x01)) && a >= 0xC800 && a <= 0xCFFF && !sh6)
-        || (FIX_SLOT_SPACE && (b == 0xE0 || b == 0xE1) && a >= 0xC800 && a <= 0xCFFF)
+        || (a >= 0xC800 && a <= 0xCFFF &&
+            (((b == 0x00 || b == 0x01) && !sh6) || b == 0xE0 || b == 0xE1) &&
+            (s.INTCXROM || (s.INTC8ROM && a != 0xCFFF)))
         || (lc_rom_bank && a >= 0xE000 && rd_or_vec && !sh6)
         || (b == 0x00 && a >= 0xC070 && a <= 0xC07F && !sh6)
         || (FIX_E0E1_RDROM_READS && (b == 0xE0 || b == 0xE1) && a >= 0xD000 && s.RDROM);
@@ -192,7 +197,7 @@ static Out ref_mmu(const In& s)
     // External slot I/O ($C090-$C0FF, not internal firmware) never enables RAM --
     // its physical $C0xx address can alias the LC bank-2 window, so a slot
     // register access must not also drive fast/slow RAM. Mirrors mmu.sv.
-    if (FIX_SLOT_SPACE && slot_space && (we || b == 0xE0 || b == 0xE1)) {
+    if (FIX_SLOT_SPACE && slot_space) {
         // slot ROM / expansion space: never RAM
     } else if (!o.IO && !o.EXTERNAL_IO) {
         if (b == 0x00) {
@@ -260,6 +265,8 @@ static void apply(const In& s, Out& d)
     dut->bank_latch = s.bank_latch;
     dut->shadow_all = s.shadow_all;
     dut->SLTROMSEL  = s.SLTROMSEL;
+    dut->INTCXROM   = s.INTCXROM;
+    dut->INTC8ROM   = s.INTC8ROM;
     dut->dbg_wdata  = 0;
     dut->dbg_cpu_addr = 0;
     dut->eval();
@@ -288,9 +295,9 @@ static void apply(const In& s, Out& d)
     if (d.field != r.field) { \
         if (mism == 0) printf("  MISMATCH bank=%02X addr=%04X we=%d vpb_n=%d rsel=%d " \
             "LCRAM2=%d RDROM=%d LC_WE=%d sh=%02X ALTZP=%d RAMRD=%d RAMWRT=%d ST80=%d PG2=%d HIRES=%d " \
-            "latch=%d shall=%d SLT=%02X\n", \
+            "latch=%d shall=%d SLT=%02X CX=%d C8=%d\n", \
             s.bank, s.addr, s.we, s.vpb_n, s.rom_select, s.LCRAM2, s.RDROM, s.LC_WE, s.shadow, \
-            s.ALTZP, s.RAMRD, s.RAMWRT, s.STORE80, s.PAGE2, s.HIRES, s.bank_latch, s.shadow_all, s.SLTROMSEL); \
+            s.ALTZP, s.RAMRD, s.RAMWRT, s.STORE80, s.PAGE2, s.HIRES, s.bank_latch, s.shadow_all, s.SLTROMSEL, s.INTCXROM, s.INTC8ROM); \
         printf("    %-18s dut=" fmt " ref=" fmt "\n", #field, (unsigned)d.field, (unsigned)r.field); \
         mism++; \
     }
@@ -373,6 +380,8 @@ int main(int argc, char** argv)
                 for (int lt = 0; lt < 2; lt++) {
                     s.bank_latch = lt;
                     s.shadow_all = (sw ^ lt) & 1;   // sampled, full coverage in phase 2
+                    s.INTCXROM   = (sw >> 1 ^ lt) & 1;  // sampled, full coverage in phase 2
+                    s.INTC8ROM   = (sw >> 2 ^ lt) & 1;
                     for (uint8_t b : banks) {
                         s.bank = b;
                         for (uint16_t a : addrs) {
@@ -409,6 +418,7 @@ int main(int argc, char** argv)
         t.STORE80   = r2 & 2;    t.PAGE2 = r2 & 4;     t.HIRES = r2 & 8;
         t.bank_latch = r2 & 16;  t.shadow_all = r2 & 32;
         t.SLTROMSEL = (uint8_t)(r1 >> 16);
+        t.INTCXROM  = r2 & 64;   t.INTC8ROM = r2 & 128;
         run_one(t);
     }
     printf("mmu_tb: phase 2 done: %ld tests, %ld failures\n", n_tests - p1, n_fail);
