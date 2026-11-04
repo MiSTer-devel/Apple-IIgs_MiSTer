@@ -4236,6 +4236,9 @@ std::string disk_image2 = "";  // HDD unit 1 (--disk2)
 std::string woz_image = "";  // WOZ disk image (flux-based)
 int woz_mount_index = -1;     // Auto-detected: 4=5.25", 5=3.5"
 int woz_mount_frame = -1;     // --woz-mount-frame: insert the WOZ disk at this frame (models mounting while the ROM is booting)
+// --woz-swap <frame>:<file>: mount another floppy at a frame (models an OSD disk swap)
+struct WozSwap { int frame; std::string path; int index; bool done; };
+std::vector<WozSwap> woz_swaps;
 
 // Convert a non-WOZ floppy image (.po/.dsk/.do/.nib/.2mg) to a temporary WOZ
 // using the shared codec (iigs_fmt), so --woz accepts any floppy format. If the
@@ -4769,6 +4772,7 @@ void show_help() {
 	printf("  --disk2 <filename>            Use specified HDD image for slot 7 unit 1\n");
 	printf("  --woz <filename>              Floppy image: .woz, or .po/.dsk/.do/.nib/.2mg (auto-converted to WOZ)\n");
 	printf("  --woz-mount-frame <frame>     Insert the --woz disk at this frame instead of at power-on (headless)\n");
+	printf("  --woz-swap <frame>:<file>     Mount another floppy at a frame, like an OSD disk swap (repeatable, headless)\n");
 	printf("  --enable-csv-trace            Enable CSV memory trace logging (vsim_trace.csv)\n");
 	printf("  --dump-csv-after <frame>      Start dumping vsim_trace.csv after a frame number\n");
 	printf("  --beam-trace <start>[,<end>]  Log beam pos (V,H_CHAR) per CPU cycle -> beam_trace.csv\n");
@@ -5091,6 +5095,22 @@ int main(int argc, char** argv, char** env) {
             disk_image2 = argv[i + 1];
             printf("Using HDD unit 1 image: %s\n", disk_image2.c_str());
             i++; // Skip the next argument since it's the filename
+        } else if (strcmp(argv[i], "--woz-swap") == 0 && i + 1 < argc) {
+            std::string arg = argv[i + 1];
+            size_t colon_pos = arg.find(':');
+            if (colon_pos == std::string::npos) {
+                fprintf(stderr, "Error: --woz-swap requires format <frame>:<file>\n");
+                return 1;
+            }
+            WozSwap s;
+            s.frame = std::stoi(arg.substr(0, colon_pos));
+            s.path = prepareFloppyImage(arg.substr(colon_pos + 1));
+            s.index = detectWozType(s.path.c_str());
+            if (s.index < 0) s.index = 5;
+            s.done = false;
+            woz_swaps.push_back(s);
+            printf("Will mount %s to index %d at frame %d\n", s.path.c_str(), s.index, s.frame);
+            i++;
         } else if (strcmp(argv[i], "--woz-mount-frame") == 0 && i + 1 < argc) {
             woz_mount_frame = std::stoi(argv[i + 1]);
             printf("Will insert the WOZ disk at frame %d\n", woz_mount_frame);
@@ -5481,6 +5501,13 @@ int main(int argc, char** argv, char** env) {
                    printf("Inserting WOZ image at frame %d: %s to index %d\n", video.count_frame, woz_image.c_str(), woz_mount_index);
                    blockdevice.MountDisk(woz_image.c_str(), woz_mount_index);
                    woz_mount_frame = -1;
+               }
+               for (auto& s : woz_swaps) {
+                   if (!s.done && video.count_frame >= s.frame) {
+                       printf("Swapping WOZ image at frame %d: %s to index %d\n", video.count_frame, s.path.c_str(), s.index);
+                       blockdevice.MountDisk(s.path.c_str(), s.index);
+                       s.done = true;
+                   }
                }
                // Trigger reset at frame (for testing reset functionality)
                if (reset_at_frame_enabled && video.count_frame == reset_at_frame) {
