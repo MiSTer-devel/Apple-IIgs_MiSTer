@@ -106,7 +106,8 @@ module emu (
         output [9:0]            sd_rd,
         output [9:0]            sd_wr,
         input [9:0]             sd_ack,
-        input [8:0]             sd_buff_addr,
+        input [13:0]            sd_buff_addr,   // [13:9] = block index within a multi-block request
+        output [5:0]            sd_blk_cnt[6],
         input [7:0]             sd_buff_dout,
         output [7:0]            sd_buff_din[6],
         input                   sd_buff_wr,
@@ -313,7 +314,7 @@ iigs  iigs(
         .HDD_MOUNTED({img_mounted[3], img_mounted[1]}),
         .img_readonly(img_readonly),
         .img_size(img_size),
-        .HDD_RAM_ADDR(sd_buff_addr),
+        .HDD_RAM_ADDR(sd_buff_addr[8:0]),
         .HDD_RAM_DI(sd_buff_dout),
         .HDD_RAM_DO(hdd_ram_do),
         .HDD_RAM_WE(sd_buff_wr & (sd_ack[3] | sd_ack[1])),
@@ -724,6 +725,10 @@ assign sd_buff_din[3] = hdd_ram_do;  // Unit 1
 
 // Unused SD indices (formerly floppy_track_1 on index 0, floppy_track_2 on index 2)
 assign sd_lba[0] = 32'b0;
+assign sd_blk_cnt[0] = 6'd0;
+assign sd_blk_cnt[1] = 6'd0;
+assign sd_blk_cnt[2] = 6'd0;
+assign sd_blk_cnt[3] = 6'd0;
 assign sd_rd[0] = 1'b0;
 assign sd_wr[0] = 1'b0;
 assign sd_buff_din[0] = 8'h00;
@@ -794,7 +799,9 @@ woz_floppy_controller #(
     .sd_rd(sd_rd[5]),
     .sd_wr(sd_wr[5]),
     .sd_ack(sd_ack[5]),
-    .sd_buff_addr(sd_buff_addr),
+    .sd_buff_addr(sd_buff_addr[8:0]),
+    .sd_buff_blk(sd_buff_addr[13:9]),
+    .sd_blk_cnt(sd_blk_cnt[5]),
     .sd_buff_dout(sd_buff_dout),
     .sd_buff_din(sd_buff_din[5]),
     .sd_buff_wr(sd_buff_wr),
@@ -900,7 +907,9 @@ woz_floppy_controller #(
     .sd_rd(sd_rd[4]),
     .sd_wr(sd_wr[4]),
     .sd_ack(sd_ack[4]),
-    .sd_buff_addr(sd_buff_addr),
+    .sd_buff_addr(sd_buff_addr[8:0]),
+    .sd_buff_blk(sd_buff_addr[13:9]),
+    .sd_blk_cnt(sd_blk_cnt[4]),
     .sd_buff_dout(sd_buff_dout),
     .sd_buff_din(sd_buff_din[4]),
     .sd_buff_wr(sd_buff_wr),

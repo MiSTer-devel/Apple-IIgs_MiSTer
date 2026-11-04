@@ -125,7 +125,11 @@ wire [31:0] sd_lba[5];
 reg   [3:0] sd_rd;         // slots 0-3 (disks); slot 4 = bk_sd_rd below
 reg   [3:0] sd_wr;
 wire  [4:0] sd_ack;
-wire  [8:0] sd_buff_addr;
+wire [13:0] sd_buff_addr;   // [13:9] = block index within a multi-block request
+wire  [5:0] sd_blk_cnt[5];
+assign sd_blk_cnt[0] = 6'd0;
+assign sd_blk_cnt[1] = 6'd0;
+assign sd_blk_cnt[4] = 6'd0;
 wire  [7:0] sd_buff_dout;
 wire  [7:0] sd_buff_din[5];
 wire        sd_buff_wr;
@@ -161,6 +165,7 @@ hps_io #(.CONF_STR(CONF_STR),.VDNUM(5)) hps_io
 	.forced_scandoubler(forced_scandoubler),
 
 	.sd_lba(sd_lba),
+	.sd_blk_cnt(sd_blk_cnt),
 	.sd_rd({bk_sd_rd, sd_rd}),
 	.sd_wr({bk_sd_wr, sd_wr}),
 	.sd_ack(sd_ack),
@@ -386,7 +391,7 @@ iigs iigs (
 	.HDD_MOUNTED(img_mounted[1:0]),
 	.img_readonly(img_readonly),
 	.img_size(img_size),
-	.HDD_RAM_ADDR(sd_buff_addr),
+	.HDD_RAM_ADDR(sd_buff_addr[8:0]),
 	.HDD_RAM_DI(sd_buff_dout),
 	.HDD_RAM_DO(hdd_ram_do),
 	.HDD_RAM_WE(sd_buff_wr & (|sd_ack[1:0])),
@@ -852,7 +857,7 @@ assign sd_lba[4] = {31'd0, rom_select};  // rom_select: 0=ROM3, 1=ROM1
 // Block layout: [0-255]=PRAM, [256-287]=TWGS X2444, rest pads $FF.
 wire       bk_save_cmd = status[21];
 wire       bk_load_cmd = status[22];
-wire [8:0] nv_addr = sd_buff_addr;
+wire [8:0] nv_addr = sd_buff_addr[8:0];
 wire [7:0] nv_din  = sd_buff_dout;
 wire [7:0] nv_dout;
 reg        bk_sd_rd, bk_sd_wr;
@@ -1062,7 +1067,9 @@ woz_floppy_controller #(
 	.sd_rd(woz_sd_rd),
 	.sd_wr(woz_sd_wr),
 	.sd_ack(sd_ack[2]),
-	.sd_buff_addr(sd_buff_addr),
+	.sd_buff_addr(sd_buff_addr[8:0]),
+	.sd_buff_blk(sd_buff_addr[13:9]),
+	.sd_blk_cnt(sd_blk_cnt[2]),
 	.sd_buff_dout(sd_buff_dout),
 	.sd_buff_din(sd_buff_din[2]),
 	.sd_buff_wr(sd_buff_wr),
@@ -1123,7 +1130,9 @@ woz_floppy_controller #(
 	.sd_rd(woz_sd_525_rd),
 	.sd_wr(woz_sd_525_wr),
 	.sd_ack(sd_ack[3]),
-	.sd_buff_addr(sd_buff_addr),
+	.sd_buff_addr(sd_buff_addr[8:0]),
+	.sd_buff_blk(sd_buff_addr[13:9]),
+	.sd_blk_cnt(sd_blk_cnt[3]),
 	.sd_buff_dout(sd_buff_dout),
 	.sd_buff_din(sd_buff_din[3]),
 	.sd_buff_wr(sd_buff_wr),

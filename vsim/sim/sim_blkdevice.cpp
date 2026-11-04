@@ -111,7 +111,7 @@ void SimBlockDevice::BeforeEval(int cycles)
     if (current_disk == i) {
     // send data
     if (ack_delay==1) {
-      if (reading && (*sd_buff_wr==0) &&  (bytecnt<kBLKSZ)) {
+      if (reading && (*sd_buff_wr==0) &&  (bytecnt<xfer_len)) {
          *sd_buff_dout = disk[i].get();
          *sd_buff_addr = bytecnt++;
          *sd_buff_wr= 1;
@@ -137,7 +137,7 @@ void SimBlockDevice::BeforeEval(int cycles)
 		  	bytecnt++;
 	  }
 	  else if (reading) {
-        	if(bytecnt == kBLKSZ) {
+        	if(bytecnt == xfer_len) {
          	 	reading = 0;
         	} 
         }
@@ -206,8 +206,10 @@ void SimBlockDevice::BeforeEval(int cycles)
        current_disk=i;
       if (!ack_delay) {
         int lba = *(sd_lba[i]);
+        xfer_len = kBLKSZ;
         if (bitcheck(*sd_rd,i)) {
         	reading = true;
+        	if (sd_blk_cnt[i]) xfer_len = (*(sd_blk_cnt[i]) + 1) * kBLKSZ;
 	}
         if (bitcheck(*sd_wr,i)) {
         	writing = true;
@@ -278,6 +280,7 @@ SimBlockDevice::SimBlockDevice(DebugConsole c) {
         sd_buff_dout = NULL;
 	for (int i=0;i<kVDNUM;i++) {
            sd_lba[i] = NULL;
+           sd_blk_cnt[i] = NULL;
 	   sd_buff_din[i] = NULL;
            mountQueue[i]=0;
         }

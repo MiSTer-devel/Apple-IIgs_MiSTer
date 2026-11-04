@@ -5296,6 +5296,7 @@ int main(int argc, char** argv, char** env) {
 	blockdevice.sd_lba[3] = &top->sd_lba[3];  // HDD unit 1
 	blockdevice.sd_lba[4] = &top->sd_lba[4];  // HDD unit 2
 	blockdevice.sd_lba[5] = &top->sd_lba[5];  // HDD unit 3
+	for (int i = 0; i < 6; i++) blockdevice.sd_blk_cnt[i] = &top->sd_blk_cnt[i];
 	blockdevice.sd_rd = &top->sd_rd;
 	blockdevice.sd_wr = &top->sd_wr;
 	blockdevice.sd_ack = &top->sd_ack;

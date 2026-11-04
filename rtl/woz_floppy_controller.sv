@@ -31,6 +31,8 @@ module woz_floppy_controller #(
     output reg        sd_wr,
     input             sd_ack,
     input      [8:0]  sd_buff_addr,
+    input      [4:0]  sd_buff_blk,   // block index within a multi-block read (hps_io sd_buff_addr[13:9])
+    output     [5:0]  sd_blk_cnt,    // blocks-1 for the current request (track reads only)
     input      [7:0]  sd_buff_dout,
     output     [7:0]  sd_buff_din,
     input             sd_buff_wr,
@@ -400,7 +402,20 @@ module woz_floppy_controller #(
     
     // SD Operation
     reg [15:0] blocks_processed;
-    
+
+    // Track reads ask hps_io for up to 32 blocks (16 KB, its limit) per request.
+    // Every request is a round trip through MiSTer Main, which can take a
+    // millisecond or more when the HPS is busy; one request per 512-byte block
+    // made a 3.5" side (19 blocks) slow enough after a step that copy-protected
+    // loaders timed out. Writes and the header scan stay single-block.
+    wire [15:0] rd_blocks_left = trk_block_count - blocks_processed;
+    wire [5:0]  rd_chunk_m1    = (rd_blocks_left > 16'd32) ? 6'd31 :
+                                 (rd_blocks_left == 16'd0) ? 6'd0 : rd_blocks_left[5:0] - 6'd1;
+    wire [15:0] rd_chunk       = {10'd0, rd_chunk_m1} + 16'd1;
+    assign sd_blk_cnt = (state == S_READ_TRACK) ? rd_chunk_m1 : 6'd0;
+    // BRAM block index of the byte currently arriving
+    wire [6:0]  rd_blk_index   = blocks_processed[6:0] + {2'd0, sd_buff_blk};
+
     // Mount Edge Detection
     reg prev_mounted;
 
@@ -1200,10 +1215,10 @@ module woz_floppy_controller #(
                         // Block complete
                         // $display("WOZ_DMA: Block %0d complete for track %0d (lba=%0d)",
                         //          blocks_processed, pending_track_id, sd_lba);
-                        blocks_processed <= blocks_processed + 1'd1;
-                        if (blocks_processed + 1 >= trk_block_count) begin
+                        blocks_processed <= blocks_processed + rd_chunk;
+                        if (blocks_processed + rd_chunk >= trk_block_count) begin
                             // Track load complete - store to appropriate RAM
-                            $display("WOZ_CTRL: Track %0d load complete (%0d blocks)", pending_track_id, blocks_processed + 1);
+                            $display("WOZ_CTRL: Track %0d load complete (%0d blocks)", pending_track_id, blocks_processed + rd_chunk);
 
                             if (IS_35_INCH && pending_track_id[0]) begin
                                 current_track_id_side1 <= pending_track_id;
@@ -1290,8 +1305,8 @@ module woz_floppy_controller #(
                             else
                                 dirty_side0 <= 0;
                         end else begin
-                            // Next block
-                            sd_lba <= sd_lba + 1'd1;
+                            // Next request
+                            sd_lba <= sd_lba + {16'd0, rd_chunk};
                         end
                     end
                 end
@@ -1517,7 +1532,7 @@ module woz_floppy_controller #(
                              // Also capture bit_count from track entry bytes 6648-6649.
                              reg [15:0] v1_raw_addr;
                              reg [15:0] v1_track_byte;
-                             v1_raw_addr = {blocks_processed[6:0], sd_buff_addr};
+                             v1_raw_addr = {rd_blk_index, sd_buff_addr};
                              v1_track_byte = v1_raw_addr - {7'd0, trks_byte_offset};
 
                              // Only write bytes that are part of the track entry (0..6655)
@@ -1535,7 +1550,7 @@ module woz_floppy_controller #(
                                  v1_bit_count[15:8] <= sd_buff_dout;
                          end else begin
                              // WOZ v2+: Direct BRAM mapping
-                             track_load_addr <= {blocks_processed[6:0], sd_buff_addr};
+                             track_load_addr <= {rd_blk_index, sd_buff_addr};
                              track_load_data <= sd_buff_dout;
                              track_load_we <= 1;
                              if (pending_is_flux) begin

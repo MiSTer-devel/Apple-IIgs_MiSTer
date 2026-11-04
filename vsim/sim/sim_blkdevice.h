@@ -18,6 +18,7 @@ struct SimBlockDevice {
 public:
 
 	IData* sd_lba[kVDNUM];
+	CData* sd_blk_cnt[kVDNUM];   // blocks-1 per request (NULL = single block)
 	SData* sd_rd;
 	SData* sd_wr;
 	SData* sd_ack;
@@ -30,6 +31,7 @@ public:
 	QData* img_size;
 
 	int bytecnt;
+	int xfer_len;                // bytes in the current read request
         long int disk_size[kVDNUM];
 	long int header_size[kVDNUM];
 	bool reading;
