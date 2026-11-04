@@ -21,6 +21,7 @@
 - 5.25" bit cells follow the WOZ INFO optimal bit timing.
 - Weak bits now repeat for the same head position, as on real media. Unmapped tracks are no longer marked as changed.
 - Each 3.5" track side is loaded in multi-block SD requests (up to 16 KB) instead of one block per request. This removes a timeout on slow HPS responses that broke Alien Mind after a track change.
+  - Fix, rebuilt into the same file: the first 20261104 build broke every zipped image and every `.po`, `.2mg`, `.dsk`, `.do`, `.nib` or DiskCopy floppy ("Check startup device!"). Main's IIgs disk layer answers those reads one block at a time; the core now advances by the blocks it actually receives.
 
 ### Serial (SCC)
 - Fixed a Z8530 WR0 register-pointer bug that hung GS/OS printing in the ROM interrupt handler.
