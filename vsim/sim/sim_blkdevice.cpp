@@ -209,7 +209,12 @@ void SimBlockDevice::BeforeEval(int cycles)
         xfer_len = kBLKSZ;
         if (bitcheck(*sd_rd,i)) {
         	reading = true;
-        	if (sd_blk_cnt[i]) xfer_len = (*(sd_blk_cnt[i]) + 1) * kBLKSZ;
+        	// SD_SINGLE_BLOCK_REPLY=1 models MiSTer Main's IIgs disk layer
+        	// (support/a2/iigs_disk.cpp iigs_read), which answers every request
+        	// with exactly one block whatever sd_blk_cnt asks for.
+        	static int single_reply = -1;
+        	if (single_reply < 0) { const char* e = getenv("SD_SINGLE_BLOCK_REPLY"); single_reply = (e && atoi(e)) ? 1 : 0; }
+        	if (sd_blk_cnt[i] && !single_reply) xfer_len = (*(sd_blk_cnt[i]) + 1) * kBLKSZ;
 	}
         if (bitcheck(*sd_wr,i)) {
         	writing = true;

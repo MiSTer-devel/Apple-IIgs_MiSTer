@@ -411,8 +411,14 @@ module woz_floppy_controller #(
     wire [15:0] rd_blocks_left = trk_block_count - blocks_processed;
     wire [5:0]  rd_chunk_m1    = (rd_blocks_left > 16'd32) ? 6'd31 :
                                  (rd_blocks_left == 16'd0) ? 6'd0 : rd_blocks_left[5:0] - 6'd1;
-    wire [15:0] rd_chunk       = {10'd0, rd_chunk_m1} + 16'd1;
     assign sd_blk_cnt = (state == S_READ_TRACK) ? rd_chunk_m1 : 6'd0;
+    // Main may answer with fewer blocks than requested: its IIgs disk layer
+    // (support/a2/iigs_disk.cpp iigs_read, used for zipped WOZ and for floppies
+    // it converts to WOZ in RAM) always sends exactly one block. Advance by the
+    // blocks that actually arrived. rd_last_blk holds the block index of the
+    // most recent byte; every request starts at index 0, so it needs no reset.
+    reg  [4:0]  rd_last_blk;
+    wire [15:0] rd_chunk       = {11'd0, rd_last_blk} + 16'd1;
     // BRAM block index of the byte currently arriving
     wire [6:0]  rd_blk_index   = blocks_processed[6:0] + {2'd0, sd_buff_blk};
 
@@ -1526,6 +1532,7 @@ module woz_floppy_controller #(
 	                             end
 	                         end
                      end else if (state == S_READ_TRACK && (transfer_active || (!old_ack && sd_ack))) begin
+                         rd_last_blk <= sd_buff_blk;
                          if (is_woz_v1) begin
                              // WOZ v1: Track data starts at trks_byte_offset within the first block.
                              // Adjust BRAM write address so track data starts at BRAM[0].
