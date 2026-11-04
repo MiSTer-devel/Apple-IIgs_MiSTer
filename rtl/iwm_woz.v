@@ -77,6 +77,7 @@ module iwm_woz (
     input  [31:0]   WOZ_TRACK1_BIT_COUNT,
     input           WOZ_TRACK1_LOAD_COMPLETE,  // Pulses when 5.25" track load finishes
     input           WOZ_TRACK1_IS_FLUX,        // Track data is flux timing (not bitstream)
+    input  [7:0]    WOZ_525_BIT_TIMING,        // WOZ INFO byte 39 for the 5.25" disk (0 = standard)
     input  [31:0]   WOZ_TRACK1_FLUX_SIZE,      // Size in bytes of flux data
     input  [31:0]   WOZ_TRACK1_FLUX_TOTAL_TICKS, // Sum of FLUX bytes for timing normalization
     input           WOZ_TRACK1_WP,             // Write-protected (from WOZ INFO chunk)
@@ -93,6 +94,10 @@ module iwm_woz (
 
     // Motor status for clock slowdown
     output          FLOPPY_MOTOR_ON,
+    // IWM drive-enable (/ENBL) state: motor commanded on, or the mode-bit-2
+    // motor-off holdover still running. This is what the FPI's slot-6 motor-on
+    // detect follows for the 1 MHz slowdown (see clock_divider disk_motor_hold).
+    output          IWM_ENBL,
 
     // 3.5" drive motor status (for dirty track flush in woz_floppy_controller)
     output          FLOPPY35_MOTOR_ON,
@@ -548,6 +553,7 @@ module iwm_woz (
         .TRACK_LOAD_COMPLETE(WOZ_TRACK3_LOAD_COMPLETE),
         .BRAM_ADDR(drive35_bram_addr),
         .BRAM_DATA(WOZ_TRACK3_BIT_DATA),
+        .OPTIMAL_BIT_TIMING(8'd0),
         .IS_FLUX_TRACK(WOZ_TRACK3_IS_FLUX),
         .FLUX_DATA_SIZE(WOZ_TRACK3_FLUX_SIZE),
         .FLUX_TOTAL_TICKS(WOZ_TRACK3_FLUX_TOTAL_TICKS),
@@ -700,6 +706,7 @@ module iwm_woz (
         .TRACK_LOAD_COMPLETE(1'b0),
         .BRAM_ADDR(),
         .BRAM_DATA(8'h00),
+        .OPTIMAL_BIT_TIMING(8'd0),
         .IS_FLUX_TRACK(1'b0),
         .FLUX_DATA_SIZE(32'd0),
         .FLUX_TOTAL_TICKS(32'd0),
@@ -799,6 +806,7 @@ module iwm_woz (
         .TRACK_LOAD_COMPLETE(WOZ_TRACK1_LOAD_COMPLETE),
         .BRAM_ADDR(drive525_bram_addr),
         .BRAM_DATA(WOZ_TRACK1_BIT_DATA),
+        .OPTIMAL_BIT_TIMING(WOZ_525_BIT_TIMING),
         .IS_FLUX_TRACK(WOZ_TRACK1_IS_FLUX),
         .FLUX_DATA_SIZE(WOZ_TRACK1_FLUX_SIZE),
         .FLUX_TOTAL_TICKS(WOZ_TRACK1_FLUX_TOTAL_TICKS),
@@ -841,8 +849,7 @@ module iwm_woz (
     // transitions so the SmartPort protocol sees an idle bus (no floppy data interference).
     // On real hardware, the SmartPort bus and 5.25" floppy are on separate physical connectors.
     wire flux_transition = (flux_is_35_inch) ? ((drive_sel == 0) ? flux_transition_35 : flux_transition_35_2) :
-                                              (smartport_mode_sense ? 1'b0 :
-                                               ((drive_sel == 0) ? flux_transition_525 : 1'b0));
+                                              ((drive_sel == 0) ? flux_transition_525 : 1'b0);
 
     // Track which drive type's flux we're actually using (for window timing).
     // CRITICAL: Window timing must match the active 3.5" cleanup window, not just
@@ -1233,6 +1240,7 @@ module iwm_woz (
         .DISK_READY(iwm_disk_ready),
         .DISK_MOUNTED(disk_mounted),
         .IS_35_INCH(flux_is_35_inch),
+        .OPTIMAL_BIT_TIMING(WOZ_525_BIT_TIMING),
         .SENSE_BIT(current_sense_final),
         .LATCHED_SENSE_REG(immediate_latched_sense_reg),  // Use immediate for same-cycle visibility
         .DISKREG_SEL(diskreg_sel),
@@ -1263,6 +1271,7 @@ module iwm_woz (
     // Only slow down for 5.25" drives (motor_spinning tracks 5.25" state/inertia).
     // 3.5" drives (handled by Sony logic) should NOT slow the system to 1MHz.
     assign FLOPPY_MOTOR_ON = motor_spinning;
+    assign IWM_ENBL = iwm_active;
 
     // 3.5" drive motor spinning state (from flux_drive Sony motor logic)
     // Used by woz_floppy_controller to trigger dirty track flush on motor-off

@@ -35,12 +35,26 @@ static const bool FIX_E0E1_RDROM_READS = true;
 //     00/01. Old RTL only folded when RDROM=0, putting such writes in the
 //     wrong bank.
 static const bool FIX_E0E1_LC_WRITE_FOLD = true;
-// D4: the $Dxxx A12 fold applies to LC bank 1, not bank 2. Bank 2 is the
-//     primary bank at physical $Dxxx (Sather "bank 2 is the primary bank";
-//     HW Ref "block 1 occupies $C000-$CFFF"; gsplus/clemens/gssquared agree).
-//     Old RTL folded bank 2, swapping the banks' physical homes (observable
-//     through the shadow[6]=1 linear window).
-static const bool FIX_LC_BANK1_FOLD = true;
+// D4: the $Dxxx A12 fold applies to LC bank 2: on the IIgs, bank 2 lives at
+//     physical $Cxxx and bank 1 at $Dxxx. Physical ROM 01 and ROM 03 MMUPROBE
+//     captures with shadow[6]=1 read the bank-2 marker at $C800 and the
+//     bank-1 marker at $D800 (KEGS and MAME agree). This reverses an earlier
+//     change that followed the IIe layout (Sather) and gssquared.
+static const bool FIX_LC_BANK2_FOLD = true;
+// D6: video shadowing follows the PHYSICAL bank. Odd banks (01, 03-7F under
+//     CYAREG[4], and RAMWRT-redirected even banks) use the aux rules: SHR
+//     bit 3 covers $2000-$9FFF, and HGR pages also need AUXHGR bit 4 clear.
+//     Old RTL applied the bank-00 rules unless the logical bank was 01.
+static const bool FIX_SHADOW_BY_PHYS_BANK = true;
+// D7: $C100-$CFFF slot space never enables RAM for writes (banks 00/01 with
+//     IOLC, E0/E1) or for E0/E1 reads; E0/E1 and bank 01 $C800-$CFFF read
+//     internal ROM like bank 00. Old RTL read/wrote E0 slow RAM (LC storage).
+static const bool FIX_SLOT_SPACE = true;
+// D9: $C800-$CFFF is internal ROM only under INTCXROM, or under INTC8ROM
+//     except $CFFF itself (physical ROM 01/03 captures); otherwise it floats.
+//     Old RTL mapped bank-00 $C800-$CFFF to ROM unconditionally.
+// D8: banks FC/FD are unpopulated on ROM 01 (rom_select=1).
+static const bool FIX_ROM01_FCFD = true;
 // D5: LC write-protect (LC_WE=0) must discard writes to $D000-$FFFF in banks
 //     00/01 (all reference emulators enforce this; ProDOS relies on it).
 //     Old RTL let them land in fast RAM.
@@ -54,6 +68,7 @@ struct In {
     bool ALTZP, RAMRD, RAMWRT, STORE80, PAGE2, HIRES;
     bool bank_latch, shadow_all;
     uint8_t SLTROMSEL;
+    bool INTCXROM, INTC8ROM;
 };
 
 struct Out {
@@ -88,14 +103,14 @@ static Out ref_mmu(const In& s)
     const bool rw      = we ? s.RAMWRT : s.RAMRD;   // RAMWRT for writes, RAMRD for reads
 
     bool aux;
-    if (mainGrp && (a < 0x0200 || a >= 0xC000))
+    if (s.shadow_all && b >= 0x02 && b <= 0x7E && !(b & 1))
+        aux = rw;                                   // all-bank shadow: even->odd redirect
+    else if (mainGrp && (a < 0x0200 || a >= 0xC000))
         aux = s.ALTZP;                              // ZP/stack + $C000-$FFFF follow ALTZP
     else if ((mainGrp || auxGrp) && a >= 0x0400 && a < 0x0800)
         aux = auxGrp || (s.STORE80 ? s.PAGE2 : rw); // text page 1: 80STORE overrides
     else if (a >= 0x2000 && a < 0x4000)
         aux = auxGrp || (mainGrp && ((s.STORE80 && s.HIRES) ? s.PAGE2 : rw)); // HGR page 1
-    else if (s.shadow_all && b >= 0x02 && b <= 0x7E && !(b & 1))
-        aux = rw;                                   // all-bank shadow: even->odd redirect
     else
         aux = auxGrp || (mainGrp && rw);
     o.aux = aux;
@@ -107,7 +122,7 @@ static Out ref_mmu(const In& s)
     // adds it).
     const bool lc_wr_exc = !s.RDROM || (s.LC_WE && we);
     const bool fold =
-        (a >> 12) == 0xD && (FIX_LC_BANK1_FOLD ? !s.LCRAM2 : s.LCRAM2) &&
+        (a >> 12) == 0xD && (FIX_LC_BANK2_FOLD ? s.LCRAM2 : !s.LCRAM2) &&
         ( ((b == 0xE0 || b == 0xE1) && (FIX_E0E1_LC_WRITE_FOLD ? lc_wr_exc : !s.RDROM)) ||
           ((b == 0x00 || b == 0x01) && !sh6 && lc_wr_exc) );
 
@@ -146,8 +161,8 @@ static Out ref_mmu(const In& s)
     o.slot_internalrom_ce = slot_window &&  o.is_internal;
 
     // --- ROM chip enables ---------------------------------------------------
-    o.romc_ce = (b == 0xFC);
-    o.romd_ce = (b == 0xFD);
+    o.romc_ce = (b == 0xFC) && !(FIX_ROM01_FCFD && s.rom_select);
+    o.romd_ce = (b == 0xFD) && !(FIX_ROM01_FCFD && s.rom_select);
     o.rom1_ce = (b == 0xFE);
 
     const bool vec = !s.vpb_n && b == 0x00 &&
@@ -158,7 +173,9 @@ static Out ref_mmu(const In& s)
     o.rom2_ce = (b == 0xFF) || vec
         || (lc_rom_bank && a >= 0xD000 && a <= 0xDFFF && rd_or_vec && !sh6)
         || (b == 0x00 && a >= 0xC000 && a <  0xC100 && rd_or_vec && !sh6)
-        || (b == 0x00 && a >= 0xC800 && a <= 0xCFFF && !sh6)
+        || (a >= 0xC800 && a <= 0xCFFF &&
+            (((b == 0x00 || b == 0x01) && !sh6) || b == 0xE0 || b == 0xE1) &&
+            (s.INTCXROM || (s.INTC8ROM && a != 0xCFFF)))
         || (lc_rom_bank && a >= 0xE000 && rd_or_vec && !sh6)
         || (b == 0x00 && a >= 0xC070 && a <= 0xC07F && !sh6)
         || (FIX_E0E1_RDROM_READS && (b == 0xE0 || b == 0xE1) && a >= 0xD000 && s.RDROM);
@@ -169,19 +186,26 @@ static Out ref_mmu(const In& s)
     const bool txt2 = !s.rom_select && !sh5 && a >= 0x0800 && a <= 0x0BFF;   // ROM3 only
     const bool hgr1 = !sh1 && a >= 0x2000 && a <= 0x3FFF;
     const bool hgr2 = !sh2 && a >= 0x4000 && a <= 0x5FFF;
-    const bool shr  = !sh3 && bphys == 0x01 && a >= 0x2000 && a <= 0x9FFF;
+    const bool odd  = FIX_SHADOW_BY_PHYS_BANK ? (bphys & 1) : (bphys == 0x01);
+    const bool shr  = !sh3 && odd && a >= 0x2000 && a <= 0x9FFF;
+    // HGR pages in an odd bank also need AUXHGR (bit 4) clear.
+    const bool hgr  = (hgr1 || hgr2) && !(FIX_SHADOW_BY_PHYS_BANK && odd && sh4);
+    const bool slot_space = a >= 0xC100 && a < 0xD000 &&
+        (((b == 0x00 || b == 0x01) && !sh6) || b == 0xE0 || b == 0xE1);
 
     bool fast = false, slow = false;
     // External slot I/O ($C090-$C0FF, not internal firmware) never enables RAM --
     // its physical $C0xx address can alias the LC bank-2 window, so a slot
     // register access must not also drive fast/slow RAM. Mirrors mmu.sv.
-    if (!o.IO && !o.EXTERNAL_IO) {
+    if (FIX_SLOT_SPACE && slot_space) {
+        // slot ROM / expansion space: never RAM
+    } else if (!o.IO && !o.EXTERNAL_IO) {
         if (b == 0x00) {
             if (FIX_LC_WRITE_PROTECT && we && !s.LC_WE && a >= 0xD000 && !sh6) {
                 // LC write-protected: write discarded
             } else if (s.RDROM && a >= 0xE000 && !o.rom_writethrough && !sh6) {
                 // ROM window: no RAM
-            } else if (txt1 || txt2 || shr || hgr1 || hgr2) {
+            } else if (txt1 || txt2 || shr || hgr) {
                 fast = slow = true;             // dual write into the shadow bank
             } else {
                 fast = true;
@@ -206,7 +230,7 @@ static Out ref_mmu(const In& s)
             // ROM banks: reads via rom CEs, writes discarded
         } else if (b < RAMSIZE && !o.rom1_ce && !o.rom2_ce) {
             fast = true;
-            if (s.shadow_all && we && (txt1 || txt2 || hgr1 || hgr2 || shr))
+            if (s.shadow_all && we && (txt1 || txt2 || hgr || shr))
                 slow = true;                    // all-bank shadow write to E0/E1
         }
     }
@@ -241,6 +265,8 @@ static void apply(const In& s, Out& d)
     dut->bank_latch = s.bank_latch;
     dut->shadow_all = s.shadow_all;
     dut->SLTROMSEL  = s.SLTROMSEL;
+    dut->INTCXROM   = s.INTCXROM;
+    dut->INTC8ROM   = s.INTC8ROM;
     dut->dbg_wdata  = 0;
     dut->dbg_cpu_addr = 0;
     dut->eval();
@@ -269,9 +295,9 @@ static void apply(const In& s, Out& d)
     if (d.field != r.field) { \
         if (mism == 0) printf("  MISMATCH bank=%02X addr=%04X we=%d vpb_n=%d rsel=%d " \
             "LCRAM2=%d RDROM=%d LC_WE=%d sh=%02X ALTZP=%d RAMRD=%d RAMWRT=%d ST80=%d PG2=%d HIRES=%d " \
-            "latch=%d shall=%d SLT=%02X\n", \
+            "latch=%d shall=%d SLT=%02X CX=%d C8=%d\n", \
             s.bank, s.addr, s.we, s.vpb_n, s.rom_select, s.LCRAM2, s.RDROM, s.LC_WE, s.shadow, \
-            s.ALTZP, s.RAMRD, s.RAMWRT, s.STORE80, s.PAGE2, s.HIRES, s.bank_latch, s.shadow_all, s.SLTROMSEL); \
+            s.ALTZP, s.RAMRD, s.RAMWRT, s.STORE80, s.PAGE2, s.HIRES, s.bank_latch, s.shadow_all, s.SLTROMSEL, s.INTCXROM, s.INTC8ROM); \
         printf("    %-18s dut=" fmt " ref=" fmt "\n", #field, (unsigned)d.field, (unsigned)r.field); \
         mism++; \
     }
@@ -354,6 +380,8 @@ int main(int argc, char** argv)
                 for (int lt = 0; lt < 2; lt++) {
                     s.bank_latch = lt;
                     s.shadow_all = (sw ^ lt) & 1;   // sampled, full coverage in phase 2
+                    s.INTCXROM   = (sw >> 1 ^ lt) & 1;  // sampled, full coverage in phase 2
+                    s.INTC8ROM   = (sw >> 2 ^ lt) & 1;
                     for (uint8_t b : banks) {
                         s.bank = b;
                         for (uint16_t a : addrs) {
@@ -390,6 +418,7 @@ int main(int argc, char** argv)
         t.STORE80   = r2 & 2;    t.PAGE2 = r2 & 4;     t.HIRES = r2 & 8;
         t.bank_latch = r2 & 16;  t.shadow_all = r2 & 32;
         t.SLTROMSEL = (uint8_t)(r1 >> 16);
+        t.INTCXROM  = r2 & 64;   t.INTC8ROM = r2 & 128;
         run_one(t);
     }
     printf("mmu_tb: phase 2 done: %ld tests, %ld failures\n", n_tests - p1, n_fail);

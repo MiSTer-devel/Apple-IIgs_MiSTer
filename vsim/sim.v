@@ -65,6 +65,12 @@ module emu (
         // Sim-only: cross-wire SCC channels as an external serial loopback cable
         input serial_loopback,
 
+        // Sim-only serial tap (--serial-port / --serial-out): OSD Serial Port
+        // selector (0=Modem/ch B, 1=Printer/ch A) and the resulting MiSTer UART
+        // TX pin, decoded to a file by sim_main.cpp
+        input serial_port_printer,
+        output uart_txd,
+
         // CPU speed control (--speed flag): 0=native 2.86MHz .. 4=14.32MHz.
         // Shares state with the ZipGS $C058-$C05F software interface.
         input [2:0] host_speed,
@@ -100,7 +106,8 @@ module emu (
         output [9:0]            sd_rd,
         output [9:0]            sd_wr,
         input [9:0]             sd_ack,
-        input [8:0]             sd_buff_addr,
+        input [13:0]            sd_buff_addr,   // [13:9] = block index within a multi-block request
+        output [5:0]            sd_blk_cnt[6],
         input [7:0]             sd_buff_dout,
         output [7:0]            sd_buff_din[6],
         input                   sd_buff_wr,
@@ -123,6 +130,7 @@ wire [15:0] joystick_a0 =  joystick_l_analog_0;
 
 wire UART_RTS;
 wire UART_TXD;
+assign uart_txd = UART_TXD;
 // UART inputs: RXD idle (mark=1), CTS asserted (clear to send=0)
 wire UART_RXD = 1'b1;
 wire UART_CTS = 1'b0;
@@ -228,6 +236,7 @@ wire        WOZ_TRACK1_IS_FLUX;   // Track data is flux timing (not bitstream)
 wire [31:0] WOZ_TRACK1_FLUX_SIZE; // Size in bytes of flux data (when IS_FLUX)
 wire [31:0] WOZ_TRACK1_FLUX_TOTAL_TICKS; // Sum of FLUX bytes for timing normalization
 wire        WOZ_TRACK1_WP;        // Write-protected flag from WOZ INFO chunk
+wire [7:0] WOZ_525_BIT_TIMING;   // WOZ INFO byte 39 (optimal bit timing) for the 5.25" disk
 
 // Write interfaces from IWM back to WOZ controllers
 wire [7:0]  WOZ_TRACK3_BIT_DATA_IN;  // Write byte for 3.5" BRAM
@@ -305,7 +314,7 @@ iigs  iigs(
         .HDD_MOUNTED({img_mounted[3], img_mounted[1]}),
         .img_readonly(img_readonly),
         .img_size(img_size),
-        .HDD_RAM_ADDR(sd_buff_addr),
+        .HDD_RAM_ADDR(sd_buff_addr[8:0]),
         .HDD_RAM_DI(sd_buff_dout),
         .HDD_RAM_DO(hdd_ram_do),
         .HDD_RAM_WE(sd_buff_wr & (sd_ack[3] | sd_ack[1])),
@@ -341,6 +350,7 @@ iigs  iigs(
     .WOZ_TRACK1_BIT_COUNT(WOZ_TRACK1_BIT_COUNT),
     .WOZ_TRACK1_LOAD_COMPLETE(woz_ctrl_525_track_load_complete),
     .WOZ_TRACK1_IS_FLUX(WOZ_TRACK1_IS_FLUX),
+    .WOZ_525_BIT_TIMING(WOZ_525_BIT_TIMING),
     .WOZ_TRACK1_FLUX_SIZE(WOZ_TRACK1_FLUX_SIZE),
     .WOZ_TRACK1_FLUX_TOTAL_TICKS(WOZ_TRACK1_FLUX_TOTAL_TICKS),
     .WOZ_TRACK1_WP(WOZ_TRACK1_WP),
@@ -361,6 +371,7 @@ iigs  iigs(
         .ps2_mouse(ps2_mouse),
         .selftest_override(selftest_override),
         .serial_loopback(serial_loopback),
+        .serial_port_printer(serial_port_printer),
         .host_speed(host_speed),
         .accel_capable(1'b1),  // sim fast RAM is single-cycle BRAM: all speed steps safe
         .zip_regs_en(1'b1),    // ZipGS software interface always present in sim
@@ -425,7 +436,7 @@ iigs  iigs(
         .AUDIO_L(AUDIO_L),
         .AUDIO_R(AUDIO_R),
 
-        // Serial (SCC Channel A = Modem port)
+        // Serial (SCC Channel B = Modem by default with serial_port_printer=0; Channel A = Printer when 1)
         .UART_TXD(UART_TXD),
         .UART_RXD(UART_RXD),
         .UART_RTS(UART_RTS),
@@ -714,6 +725,10 @@ assign sd_buff_din[3] = hdd_ram_do;  // Unit 1
 
 // Unused SD indices (formerly floppy_track_1 on index 0, floppy_track_2 on index 2)
 assign sd_lba[0] = 32'b0;
+assign sd_blk_cnt[0] = 6'd0;
+assign sd_blk_cnt[1] = 6'd0;
+assign sd_blk_cnt[2] = 6'd0;
+assign sd_blk_cnt[3] = 6'd0;
 assign sd_rd[0] = 1'b0;
 assign sd_wr[0] = 1'b0;
 assign sd_buff_din[0] = 8'h00;
@@ -784,7 +799,9 @@ woz_floppy_controller #(
     .sd_rd(sd_rd[5]),
     .sd_wr(sd_wr[5]),
     .sd_ack(sd_ack[5]),
-    .sd_buff_addr(sd_buff_addr),
+    .sd_buff_addr(sd_buff_addr[8:0]),
+    .sd_buff_blk(sd_buff_addr[13:9]),
+    .sd_blk_cnt(sd_blk_cnt[5]),
     .sd_buff_dout(sd_buff_dout),
     .sd_buff_din(sd_buff_din[5]),
     .sd_buff_wr(sd_buff_wr),
@@ -890,7 +907,9 @@ woz_floppy_controller #(
     .sd_rd(sd_rd[4]),
     .sd_wr(sd_wr[4]),
     .sd_ack(sd_ack[4]),
-    .sd_buff_addr(sd_buff_addr),
+    .sd_buff_addr(sd_buff_addr[8:0]),
+    .sd_buff_blk(sd_buff_addr[13:9]),
+    .sd_blk_cnt(sd_blk_cnt[4]),
     .sd_buff_dout(sd_buff_dout),
     .sd_buff_din(sd_buff_din[4]),
     .sd_buff_wr(sd_buff_wr),
@@ -932,6 +951,7 @@ woz_floppy_controller #(
 
     // Write-protect flag from WOZ INFO chunk
     .disk_write_protected(WOZ_TRACK1_WP),
+    .optimal_bit_timing(WOZ_525_BIT_TIMING),
     .dbg_load_sum(),
     .dbg_load_bytes(),
     .dbg_load_blocks()

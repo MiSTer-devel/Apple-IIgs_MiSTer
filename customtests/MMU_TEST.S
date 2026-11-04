@@ -1140,31 +1140,31 @@ TEST25_FAIL
         JMP   TEST26
 
 ;=============================================================================
-; TEST 26: LC $D000 physical layout - bank 2 is the primary block
+; TEST 26: LC $D000 physical layout - bank 1 at $Dxxx, bank 2 at $Cxxx
 ;
-; HW Ref: "If the language card is not enabled, the first of these blocks of
-; RAM, block 1, occupies address space from $C000 to $CFFF." Sather: "Bank 2
-; is the primary bank." With IOLC inhibited (shadow bit 6), banks 00/01
-; become linear 64K RAM: $D000-$DFFF shows the bank-2 block and $C000-$CFFF
-; shows the bank-1 block. (gssquared and Clemens implement the same layout;
-; bank-00 $C0xx is plain RAM under IOLC inhibit, so LC switches must be
-; driven through bank E0 I/O, which is always live.)
+; Measured on physical Apple IIgs ROM 01 and ROM 03 machines (MMUPROBE,
+; github.com/hasseily/apple2gs-tests): with IOLC inhibited (shadow bit 6),
+; banks 00/01 become linear 64K RAM where $D000-$DFFF shows the LC bank-1
+; block and $C000-$CFFF shows the bank-2 block. This is the reverse of the
+; IIe layout (Sather: "bank 2 is the primary bank"); KEGS and MAME match the
+; hardware. Bank-00 $C0xx is plain RAM under IOLC inhibit, so LC switches
+; must be driven through bank E0 I/O, which is always live.
 ;
 ; 1. Write $5A to LC bank 2 $D000 and $A5 to LC bank 1 $D000 (via E0 I/O)
 ; 2. Set IOLC inhibit (shadow=$7F) - banks 00/01 turn into linear RAM
-; 3. Linear 00:D000 must read $5A (bank 2); linear 00:C000 must read $A5
+; 3. Linear 00:D000 must read $A5 (bank 1); linear 00:C000 must read $5A
 ;=============================================================================
 TEST26
         INC   TESTNUM
         JSR   SHOWTEST
 
-        ; Step 1a: LC bank 2, write-enable, marker $5A (lives at phys $D000)
+        ; Step 1a: LC bank 2, write-enable, marker $5A (lives at phys $C000)
         LDA   >$E0C083        ; First read - LC bank 2, read RAM
         LDA   >$E0C083        ; Second read - enable write
         LDA   #$5A
         STA   >$00D000
 
-        ; Step 1b: LC bank 1, write-enable, marker $A5 (lives at phys $C000)
+        ; Step 1b: LC bank 1, write-enable, marker $A5 (lives at phys $D000)
         LDA   >$E0C08B        ; First read - LC bank 1
         LDA   >$E0C08B        ; Second read - enable write
         LDA   #$A5
@@ -1175,9 +1175,9 @@ TEST26
         STA   >$E0C035
 
         ; Step 3: check the linear layout
-        LDA   >$00D000        ; primary block = LC bank 2
+        LDA   >$00D000        ; unfolded block = LC bank 1
         STA   >$E00503
-        LDA   >$00C000        ; folded block = LC bank 1
+        LDA   >$00C000        ; folded block = LC bank 2
         STA   >$E00504
 
         ; Cleanup: disable IOLC inhibit, restore ROM read
@@ -1187,10 +1187,10 @@ TEST26
 
         ; Check results
         LDA   >$E00503
-        CMP   #$5A
+        CMP   #$A5
         BNE   TEST26_FAIL
         LDA   >$E00504
-        CMP   #$A5
+        CMP   #$5A
         BNE   TEST26_FAIL
 
         JSR   SHOWPASS

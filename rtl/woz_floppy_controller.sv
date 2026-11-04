@@ -31,6 +31,8 @@ module woz_floppy_controller #(
     output reg        sd_wr,
     input             sd_ack,
     input      [8:0]  sd_buff_addr,
+    input      [4:0]  sd_buff_blk,   // block index within a multi-block read (hps_io sd_buff_addr[13:9])
+    output     [5:0]  sd_blk_cnt,    // blocks-1 for the current request (track reads only)
     input      [7:0]  sd_buff_dout,
     output     [7:0]  sd_buff_din,
     input             sd_buff_wr,
@@ -77,6 +79,11 @@ module woz_floppy_controller #(
     // Write-protect flag from WOZ INFO chunk (byte offset 2).
     // Some copy-protection (e.g. Wizardry) refuses to boot unless the disk reports WP=1.
     output wire       disk_write_protected,
+
+    // Optimal bit timing from WOZ INFO chunk (byte offset 39), in 125ns units.
+    // 32 = the 4us standard for 5.25"; a handful of titles master at 28/29/34.
+    // 0 when absent (WOZ1 has no such field) -- consumers treat 0 as "standard".
+    output wire [7:0] optimal_bit_timing,
 
     // DEBUG: running sum of all sd_buff bytes received during track loads
     // (S_READ_TRACK). Reset at each load start. Compared between sim (golden)
@@ -329,6 +336,7 @@ module woz_floppy_controller #(
     // Disk type mismatch: WOZ INFO disk_type 1=5.25", 2=3.5"
     assign disk_type_mismatch = woz_valid && ((IS_35_INCH && info_disk_type == 8'd1) || (!IS_35_INCH && info_disk_type == 8'd2));
     assign disk_write_protected = woz_valid && (info_wp != 8'd0);
+    assign optimal_bit_timing   = woz_valid ? info_bit_timing : 8'd0;
 
     // WOZ Parsing
     reg [10:0] meta_read_addr;
@@ -394,7 +402,20 @@ module woz_floppy_controller #(
     
     // SD Operation
     reg [15:0] blocks_processed;
-    
+
+    // Track reads ask hps_io for up to 32 blocks (16 KB, its limit) per request.
+    // Every request is a round trip through MiSTer Main, which can take a
+    // millisecond or more when the HPS is busy; one request per 512-byte block
+    // made a 3.5" side (19 blocks) slow enough after a step that copy-protected
+    // loaders timed out. Writes and the header scan stay single-block.
+    wire [15:0] rd_blocks_left = trk_block_count - blocks_processed;
+    wire [5:0]  rd_chunk_m1    = (rd_blocks_left > 16'd32) ? 6'd31 :
+                                 (rd_blocks_left == 16'd0) ? 6'd0 : rd_blocks_left[5:0] - 6'd1;
+    wire [15:0] rd_chunk       = {10'd0, rd_chunk_m1} + 16'd1;
+    assign sd_blk_cnt = (state == S_READ_TRACK) ? rd_chunk_m1 : 6'd0;
+    // BRAM block index of the byte currently arriving
+    wire [6:0]  rd_blk_index   = blocks_processed[6:0] + {2'd0, sd_buff_blk};
+
     // Mount Edge Detection
     reg prev_mounted;
 
@@ -615,12 +636,18 @@ module woz_floppy_controller #(
 	            end
 	            prev_mounted <= img_mounted;
             
-            // Set per-side dirty flag on bit writes
+            // Set per-side dirty flag on bit writes.
+            // Only if that side actually has mapped blocks: an unmapped (TMAP==FF)
+            // track has nowhere to be written back to, and marking it dirty would
+            // flush the BRAM over whichever track's blocks were last loaded.
             if (bit_we) begin
-                if (IS_35_INCH && track_id[0])
-                    dirty_side1 <= 1;
-                else
-                    dirty_side0 <= 1;
+                if (IS_35_INCH && track_id[0]) begin
+                    if (trk_block_count_side1 != 16'd0)
+                        dirty_side1 <= 1;
+                end else begin
+                    if (trk_block_count_side0 != 16'd0)
+                        dirty_side0 <= 1;
+                end
 `ifdef DEBUG_VERBOSE
                 // Log dirty transitions (always) and first/periodic writes
                 if (!dirty_side0 && !(IS_35_INCH && track_id[0]))
@@ -962,18 +989,27 @@ module woz_floppy_controller #(
                                  trk_block_count <= 0;
                                  trk_bit_count <= 0;
                                  // Store empty track info to appropriate side
+                                 // Also invalidate this side's block pointers. They are
+                                 // only assigned on the successful-load path, so leaving
+                                 // them alone here keeps them aimed at the PREVIOUS track:
+                                 // a later write to this unmapped track would set dirty and
+                                 // flush BRAM over that track's blocks, corrupting the image.
                                  if (IS_35_INCH && pending_track_id[0]) begin
                                      current_track_id_side1 <= pending_track_id;
                                      bit_count_side1 <= 32'd0;
                                      is_flux_side1 <= 1'b0;
                                      flux_size_side1 <= 32'd0;
                                      flux_total_ticks_side1 <= 32'd0;
+                                     trk_start_block_side1 <= 16'd0;
+                                     trk_block_count_side1 <= 16'd0;
                                  end else begin
                                      current_track_id_side0 <= pending_track_id;
                                      bit_count_side0 <= 32'd0;
                                      is_flux_side0 <= 1'b0;
                                      flux_size_side0 <= 32'd0;
                                      flux_total_ticks_side0 <= 32'd0;
+                                     trk_start_block_side0 <= 16'd0;
+                                     trk_block_count_side0 <= 16'd0;
                                  end
                                  // Clear dirty for the side being loaded (empty track replaces it)
                                  if (IS_35_INCH && pending_track_id[0])
@@ -1179,10 +1215,10 @@ module woz_floppy_controller #(
                         // Block complete
                         // $display("WOZ_DMA: Block %0d complete for track %0d (lba=%0d)",
                         //          blocks_processed, pending_track_id, sd_lba);
-                        blocks_processed <= blocks_processed + 1'd1;
-                        if (blocks_processed + 1 >= trk_block_count) begin
+                        blocks_processed <= blocks_processed + rd_chunk;
+                        if (blocks_processed + rd_chunk >= trk_block_count) begin
                             // Track load complete - store to appropriate RAM
-                            $display("WOZ_CTRL: Track %0d load complete (%0d blocks)", pending_track_id, blocks_processed + 1);
+                            $display("WOZ_CTRL: Track %0d load complete (%0d blocks)", pending_track_id, blocks_processed + rd_chunk);
 
                             if (IS_35_INCH && pending_track_id[0]) begin
                                 current_track_id_side1 <= pending_track_id;
@@ -1269,8 +1305,8 @@ module woz_floppy_controller #(
                             else
                                 dirty_side0 <= 0;
                         end else begin
-                            // Next block
-                            sd_lba <= sd_lba + 1'd1;
+                            // Next request
+                            sd_lba <= sd_lba + {16'd0, rd_chunk};
                         end
                     end
                 end
@@ -1496,7 +1532,7 @@ module woz_floppy_controller #(
                              // Also capture bit_count from track entry bytes 6648-6649.
                              reg [15:0] v1_raw_addr;
                              reg [15:0] v1_track_byte;
-                             v1_raw_addr = {blocks_processed[6:0], sd_buff_addr};
+                             v1_raw_addr = {rd_blk_index, sd_buff_addr};
                              v1_track_byte = v1_raw_addr - {7'd0, trks_byte_offset};
 
                              // Only write bytes that are part of the track entry (0..6655)
@@ -1514,7 +1550,7 @@ module woz_floppy_controller #(
                                  v1_bit_count[15:8] <= sd_buff_dout;
                          end else begin
                              // WOZ v2+: Direct BRAM mapping
-                             track_load_addr <= {blocks_processed[6:0], sd_buff_addr};
+                             track_load_addr <= {rd_blk_index, sd_buff_addr};
                              track_load_data <= sd_buff_dout;
                              track_load_we <= 1;
                              if (pending_is_flux) begin

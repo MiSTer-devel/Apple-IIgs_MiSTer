@@ -29,10 +29,10 @@
 // I/O, slots). Neither chip contains an adder in the address path — all
 // remapping is done by gating individual address lines:
 //
-//   - Language-card $Dxxx bank-1 window: force A12 low, so bank 1 lives in the
-//     otherwise-unused $Cxxx physical RAM. Bank 2 is the primary bank at
-//     physical $Dxxx (Sather UtA2e; HW Ref: "block 1 occupies $C000-$CFFF
-//     when the card is not enabled").
+//   - Language-card $Dxxx bank-2 window: force A12 low, so bank 2 lives in the
+//     otherwise-unused $Cxxx physical RAM and bank 1 at physical $Dxxx.
+//     This is measured on physical IIgs ROM 01 and ROM 03 machines with IOLC
+//     inhibited. It is the reverse of the IIe layout in Sather's UtA2e.
 //   - Main/aux select: force bank bit 0 high (slow-RAM A16 / odd fast bank).
 //
 // Everything here is a pure function of {bank_log, addr_log, we, vpb_n} and
@@ -65,6 +65,8 @@ module mmu #(
     input  wire        bank_latch,    // NEWVIDEO[0]: 1 = E1 distinct from E0
     input  wire        shadow_all,    // CYAREG[4]: shadow video pages in all banks
     input  wire [7:0]  SLTROMSEL,     // $C02D slot ROM select
+    input  wire        INTCXROM,      // $C007: internal ROM for all of $C100-$CFFF
+    input  wire        INTC8ROM,      // internal ROM owns $C800-$CFFF (set by $C3xx, cleared by $CFFF)
 
     // Simulation debug only (referenced by `ifdef debug $display; unused in synthesis)
     input  wire [7:0]  dbg_wdata,
@@ -101,15 +103,18 @@ module mmu #(
   always @(*)
     begin: aux_ctrl
       aux = 1'b0;
-      if ((bank_log==0 || bank_log==8'he0 || (bank_log==8'he1 && ~bank_latch)) && (addr_log[15:9] == 7'b0000000 | addr_log[15:14] == 2'b11))		// Page 00,01,C0-FF
+      // Checked first: the $20-$3F branch below has no bank guard, so it used
+      // to catch even high banks and drop their RAMRD/RAMWRT redirect
+      // (physical capture: 02:2000, RAMWRT=1, CYAREG[4]=1 -> 03 + E1).
+      if (all_bank_shadow_even)
+        // All-bank shadow: RAMRD/RAMWRT redirects even banks to odd banks
+        aux = ((RAMRD & ~we) | (RAMWRT & we));
+      else if ((bank_log==0 || bank_log==8'he0 || (bank_log==8'he1 && ~bank_latch)) && (addr_log[15:9] == 7'b0000000 | addr_log[15:14] == 2'b11))		// Page 00,01,C0-FF
         aux = ALTZP;
       else if ((bank_log==0 || bank_log==1 || bank_log==8'he0 || bank_log==8'he1) &&  addr_log[15:10] == 6'b000001)		// Page 04-07
         aux = ((bank_log==1 || (bank_log==8'he1 && bank_latch)) || ((bank_log==0 || bank_log==8'he0 || (bank_log==8'he1 && ~bank_latch)) &&   ( (STORE80 & PAGE2) | ((~STORE80) & ((RAMRD & (~we)) | (RAMWRT & we))))));
       else if (addr_log[15:13] == 3'b001)		// Page 20-3F
         aux = ((bank_log==1 || (bank_log==8'he1 && bank_latch)) || ((bank_log==0 || bank_log==8'he0 || (bank_log==8'he1 && ~bank_latch)) &&    ((STORE80 & PAGE2 & HIRES_MODE) | (((~STORE80) | (~HIRES_MODE)) & ((RAMRD & (~we)) | (RAMWRT & we))))));
-      else if (all_bank_shadow_even)
-        // All-bank shadow: RAMRD/RAMWRT redirects even banks to odd banks
-        aux = ((RAMRD & ~we) | (RAMWRT & we));
       else
         aux = ((bank_log==1 || (bank_log==8'he1 && bank_latch)) || ((bank_log==0 || bank_log==8'he0 || (bank_log==8'he1 && ~bank_latch)) && ((RAMRD & (~we)) | (RAMWRT & we))));
     end
@@ -122,13 +127,16 @@ module mmu #(
   // so this concatenation is exactly "addr_log - 16'h1000".
   wire [15:0] addr_lc_fold = {addr_log[15:13], 1'b0, addr_log[11:0]};
 
-  // Language-card $Dxxx bank-1 window active: fold A12 (bank 2 is the primary
-  // bank and stays at physical $Dxxx — Sather / HW Ref / all ref emulators).
+  // Language-card $Dxxx bank-2 window active: fold A12. On the IIgs, LC bank 1
+  // lives at physical $Dxxx and bank 2 at physical $Cxxx. This is the reverse
+  // of the IIe (Sather) layout. Physical ROM 01 and ROM 03 MMUPROBE captures
+  // with IOLC inhibited (shadow[6]=1) read the bank-2 marker at $C800 and the
+  // bank-1 marker at $D800. KEGS and MAME agree.
   // Mega II side (E0/E1): IOLC is always present. FPI side (00/01): only when
   // shadow[6]=0. On both sides, under RDROM the fold still applies to
   // language-card WRITES (write RAM while reading ROM) via LC_WE && we.
   wire lc_dxxx_fold =
-      (addr_log[15:12] == 4'hD) && ~LCRAM2 && (~RDROM || (LC_WE && we)) &&
+      (addr_log[15:12] == 4'hD) && LCRAM2 && (~RDROM || (LC_WE && we)) &&
       ( (bank_log == 8'he0 || bank_log == 8'he1) ||
         ((bank_log == 8'h00 || bank_log == 8'h01) && ~shadow[6]) );
 
@@ -186,8 +194,10 @@ module mmu #(
   // ROM chip enables
   // --------------------------------------------------------------------------
 
-  assign romc_ce = bank_log == 8'hfc;
-  assign romd_ce = bank_log == 8'hfd;
+  // Banks FC/FD hold ROM only on ROM 03. On ROM 01 they are unpopulated and
+  // read as floating bus (physical ROM 01 capture returns the bank number).
+  assign romc_ce = bank_log == 8'hfc && ~rom_select;
+  assign romd_ce = bank_log == 8'hfd && ~rom_select;
   assign rom1_ce = bank_log == 8'hfe;
 
   // Force ROM2 on IRQ/BRK vector fetch cycles (VPB low) to return correct vectors from ROM bank FF
@@ -204,20 +214,22 @@ module mmu #(
   // The language-card ROM windows ($D000-$DFFF, $E000-$FFFF under RDROM) apply
   // to bank 01 exactly like bank 00 (shadow[6] IOLC control covers both banks).
   wire lc_rom_bank = (bank_log == 8'h00 || bank_log == 8'h01);
+  wire c800_window = (addr_log >= 16'hc800) && (addr_log <= 16'hcfff) &&
+                     ((lc_rom_bank && !shadow[6]) || bank_log == 8'he0 || bank_log == 8'he1);
   assign rom2_ce = (bank_log == 8'hff) || vec_fetch_force_rom_ce ||
                    (lc_rom_bank & addr_log >= 16'hd000 & addr_log <= 16'hdfff && (RDROM | ~vpb_n) && !shadow[6]) ||
                    (bank_log == 8'h0 & addr_log >= 16'hc000 & addr_log < 16'hc100 && (RDROM | ~vpb_n) && !shadow[6]) ||  // I/O ($C000-$C0FF) - only when IOLC not inhibited
-                   // $C800-$CFFF: slot expansion ROM. On real hardware this maps to
-                   // the expansion ROM of whichever slot most recently had $CN00
-                   // accessed (cleared by reading $CFFF). We don't model external slot
-                   // cards — every slot in this sim points at internal IIgs firmware —
-                   // so routing $C800-$CFFF to internal ROM unconditionally (when IOLC
-                   // is not inhibited) matches every observable behavior. Previously we
-                   // gated on (RDROM | ~VPB), which broke games that do JSR $C300 /
-                   // JMP $C803 with both RDROM=0 and INTCXROM=0 (e.g. A Mind Forever
-                   // Voyaging) — they'd read $C803 as RAM = 0x00 and BRK into the
-                   // monitor at frame ~430.
-                   (bank_log == 8'h0 & addr_log >= 16'hc800 & addr_log <= 16'hcfff && !shadow[6]) ||  // Expansion ($C800-$CFFF)
+                   // $C800-$CFFF: expansion ROM. No external card here has C800 ROM,
+                   // so only internal ROM can own the window. Software that does
+                   // JSR $C300 / JMP $C803 with INTCXROM=0 (e.g. A Mind Forever
+                   // Voyaging) works because the $C3xx access sets INTC8ROM; gating
+                   // on (RDROM | ~VPB) once broke it (BRK at frame ~430).
+                   // Physical ROM 01/03 MMUPROBE captures: internal ROM appears at
+                   // $C800-$CFFF only under INTCXROM or after a $C3xx access with
+                   // SLOTC3ROM=0 (INTC8ROM); otherwise the read floats. $CFFF itself
+                   // is internal ROM only under INTCXROM (the access releases INTC8ROM).
+                   // This applies in banks 00/01 (IOLC mapped) and E0/E1.
+                   (c800_window && (INTCXROM || (INTC8ROM && addr_log != 16'hcfff))) ||
                    // Note: $C100-$C7FF (slot ROM) deliberately NOT included here - handled by slot_internalrom_ce/slot_ce
                    (lc_rom_bank & addr_log >= 16'he000 &                          (RDROM | ~vpb_n) && !shadow[6]) ||
                    (bank_log == 8'h0 & addr_log >= 16'hc070 & addr_log <= 16'hc07f && !shadow[6]) ||
@@ -243,16 +255,35 @@ module mmu #(
 
   wire hgr1_shadow  = ~shadow[1] && (page >= 4'h2 && page <= 4'h3);          // $2000-$3FFF
   wire hgr2_shadow  = ~shadow[2] && (page >= 4'h4 && page <= 4'h5);          // $4000-$5FFF
-  // SHR shadow bit 3: When 0, entire $2000-$9FFF shadows (master enable for SHR mode)
-  // When bit 3=1, HGR bits 1-2 control $2000-$5FFF, and $6000-$9FFF does not shadow
-  wire shr_master_shadow = ~shadow[3] && (bank_phys == 8'h01) && (page >= 4'h2 && page <= 4'h9);     // $2000-$9FFF when bit3=0
-  wire aux_disable  = shadow[4];   // When set, disable auxiliary shadowing for bank 01
+  // Shadow rules follow the PHYSICAL bank: an odd fast bank (01, or 03-7F
+  // under CYAREG[4], or an even bank redirected by RAMWRT) uses the aux rules
+  // and shadows into E1. Matches all 35,840 shadow cases of the physical
+  // ROM 01 and ROM 03 MMUPROBE captures:
+  //   even: $2000/$4000 page shadows iff its HGR bit is clear.
+  //   odd:  $2000-$9FFF shadows iff bit 3 (SHR) is clear; otherwise
+  //         $2000/$4000 shadow iff the HGR bit AND bit 4 (AUXHGR) are clear.
+  wire odd_phys     = bank_phys[0];
+  wire shr_master_shadow = ~shadow[3] && odd_phys && (page >= 4'h2 && page <= 4'h9);     // $2000-$9FFF when bit3=0
+  wire aux_disable  = shadow[4];   // When set, disable auxiliary Hi-Res shadowing
+  wire hgr_shadow   = (hgr1_shadow || hgr2_shadow) && ~(odd_phys && aux_disable);
+  wire video_shadow = txt1_shadow || txt2_shadow || shr_master_shadow || hgr_shadow;
+
+  // Slot ROM / expansion space $C100-$CFFF while I/O is mapped in. These
+  // addresses are never RAM: reads come from internal ROM, a slot, or the
+  // floating bus, and their physical cells hold LC $Dxxx bank-2 data (A12
+  // fold) that writes must not touch.
+  wire slot_space = (addr_log >= 16'hc100) && (addr_log < 16'hd000) &&
+                    ( ((bank_log == 8'h00 || bank_log == 8'h01) && !shadow[6]) ||
+                      bank_log == 8'he0 || bank_log == 8'he1 );
 
   always_comb begin
     fastram_ce = 0;
     slowram_ce = 0;
 
-    if (IO || EXTERNAL_IO) begin
+    if (slot_space) begin
+      fastram_ce = 0;
+      slowram_ce = 0;
+    end else if (IO || EXTERNAL_IO) begin
       // I/O space - no RAM access.
       // EXTERNAL_IO covers slot I/O $C090-$C0FF that is NOT decoded as internal
       // IO (IO is only asserted for internal-firmware slots). Those physical
@@ -278,10 +309,10 @@ module mmu #(
           end else if (RDROM && addr_log >= 16'hE000 && !rom_writethrough && !shadow[6]) begin
             fastram_ce = 0;
             slowram_ce = 0;
-          end else if (txt1_shadow || txt2_shadow || shr_master_shadow || hgr1_shadow || hgr2_shadow) begin
+          end else if (video_shadow) begin
             // Shadowed regions: Enable BOTH for compatibility (fastram takes priority in mux)
-            // shr_master_shadow: When bit3=0, entire $2000-$9FFF shadows
-            // hgr*_shadow: When bit3=1, only HGR pages shadow based on bits 1-2
+            // A RAMWRT/RAMRD-redirected access lands in bank 01, so video_shadow
+            // applies the aux rules (SHR bit 3, AUXHGR bit 4) via odd_phys.
             fastram_ce = 1; // Enable fastram (will be selected by priority mux)
             slowram_ce = 1; // Also enable slowram (for proper shadow writes)
 `ifdef DEBUG_IO
@@ -377,7 +408,8 @@ module mmu #(
             // txt1_shadow, hgr*_shadow etc already include shadow register inhibit checks
             if (shadow_all && we) begin  // All banks when writing (bank[0] determines E0 vs E1)
               // Check if address is in a shadowable video region
-              if (txt1_shadow || txt2_shadow || hgr1_shadow || hgr2_shadow || shr_master_shadow) begin
+              // Odd banks (incl. RAMWRT-redirected even banks) use the aux rules.
+              if (video_shadow) begin
                 slowram_ce = 1;  // Enable shadow write to E0 (even) or E1 (odd)
 `ifdef DEBUG_IO
                 $display("FPI_SHADOW: bank%02x addr=%04x data=%02x -> E%d shadow (CYAREG[4]=1)",

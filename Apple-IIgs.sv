@@ -88,6 +88,7 @@ localparam CONF_STR = {
 	"S3,WOZDSKDO PO NIB2MG,WOZ 5.25;",
 	"-;",
 	"O[14:12],CPU Speed,2.8 MHz (Std),3.6 MHz,4.8 MHz,7.2 MHz,14.3 MHz;",
+	"O[26],Serial Port,Modem (Slot 2),Printer (Slot 1);",
 	"P1,Accelerator;",
 	"P1-;",
 	"P1O[16:15],Card,ZipGS,TransWarp GS,None (OSD speed only);",
@@ -124,7 +125,11 @@ wire [31:0] sd_lba[5];
 reg   [3:0] sd_rd;         // slots 0-3 (disks); slot 4 = bk_sd_rd below
 reg   [3:0] sd_wr;
 wire  [4:0] sd_ack;
-wire  [8:0] sd_buff_addr;
+wire [13:0] sd_buff_addr;   // [13:9] = block index within a multi-block request
+wire  [5:0] sd_blk_cnt[5];
+assign sd_blk_cnt[0] = 6'd0;
+assign sd_blk_cnt[1] = 6'd0;
+assign sd_blk_cnt[4] = 6'd0;
 wire  [7:0] sd_buff_dout;
 wire  [7:0] sd_buff_din[5];
 wire        sd_buff_wr;
@@ -160,6 +165,7 @@ hps_io #(.CONF_STR(CONF_STR),.VDNUM(5)) hps_io
 	.forced_scandoubler(forced_scandoubler),
 
 	.sd_lba(sd_lba),
+	.sd_blk_cnt(sd_blk_cnt),
 	.sd_rd({bk_sd_rd, sd_rd}),
 	.sd_wr({bk_sd_wr, sd_wr}),
 	.sd_ack(sd_ack),
@@ -288,6 +294,13 @@ wire osd_irq_delay  = ~status[23];  // 0 = Enabled (visible for all cards: the
                                     // TWGS CDA exposes this one too)
 wire osd_twgs_gfx   = ~status[24];  // 0 = On (TWGS NVRAM config bit2)
 wire osd_twgs_snd   = ~status[25];  // 0 = On (TWGS NVRAM config bit3)
+// Serial port routing selector from OSD menu (status[26]):
+//   0 = Modem (Port 2 / Slot 2, SCC Channel B: $C038/$C03A) routed to MiSTer UART
+//   1 = Printer (Port 1 / Slot 1, SCC Channel A: $C039/$C03B) routed to MiSTer UART
+// Reference: Apple IIgs Hardware Reference Chapter 7 (Built-in I/O Ports) and Chapter 8 (Slot Register $C02D).
+// Note: Classic Apple II assigns Slot 1 = Printer, Slot 2 = Modem. Unlike Macintosh (where Ch A=Modem, Ch B=Printer),
+// Apple IIgs uses SCC Channel A for Slot 1 (Printer) and Channel B for Slot 2 (Modem).
+wire serial_port_printer = status[26]; // 0 = Modem (Slot 2), 1 = Printer (Slot 1)
 
 // OSD status write-back ("the OSD is a live display"): when software (Zip CP
 // via $C059/$C05C/$C05D, TWGS via $BC0000) changes the accelerator state, push
@@ -378,7 +391,7 @@ iigs iigs (
 	.HDD_MOUNTED(img_mounted[1:0]),
 	.img_readonly(img_readonly),
 	.img_size(img_size),
-	.HDD_RAM_ADDR(sd_buff_addr),
+	.HDD_RAM_ADDR(sd_buff_addr[8:0]),
 	.HDD_RAM_DI(sd_buff_dout),
 	.HDD_RAM_DO(hdd_ram_do),
 	.HDD_RAM_WE(sd_buff_wr & (|sd_ack[1:0])),
@@ -409,6 +422,7 @@ iigs iigs (
 	.WOZ_TRACK1_BIT_COUNT(WOZ_TRACK1_BIT_COUNT),
 	.WOZ_TRACK1_LOAD_COMPLETE(WOZ_TRACK1_LOAD_COMPLETE),
 	.WOZ_TRACK1_IS_FLUX(WOZ_TRACK1_IS_FLUX),
+	.WOZ_525_BIT_TIMING(WOZ_525_BIT_TIMING),
 	.WOZ_TRACK1_FLUX_SIZE(WOZ_TRACK1_FLUX_SIZE),
 	.WOZ_TRACK1_FLUX_TOTAL_TICKS(WOZ_TRACK1_FLUX_TOTAL_TICKS),
 	.WOZ_TRACK1_WP(WOZ_TRACK1_WP),
@@ -474,6 +488,7 @@ iigs iigs (
 	.UART_RXD(UART_RXD),
 	.UART_RTS(UART_RTS),
 	.UART_CTS(UART_CTS),
+	.serial_port_printer(serial_port_printer),
 
 	// Keyboard-triggered reset outputs (Ctrl+F11, Ctrl+OpenApple+F11)
 	.keyboard_reset(keyboard_reset),
@@ -842,7 +857,7 @@ assign sd_lba[4] = {31'd0, rom_select};  // rom_select: 0=ROM3, 1=ROM1
 // Block layout: [0-255]=PRAM, [256-287]=TWGS X2444, rest pads $FF.
 wire       bk_save_cmd = status[21];
 wire       bk_load_cmd = status[22];
-wire [8:0] nv_addr = sd_buff_addr;
+wire [8:0] nv_addr = sd_buff_addr[8:0];
 wire [7:0] nv_din  = sd_buff_dout;
 wire [7:0] nv_dout;
 reg        bk_sd_rd, bk_sd_wr;
@@ -944,6 +959,7 @@ wire        WOZ_TRACK1_IS_FLUX;
 wire [31:0] WOZ_TRACK1_FLUX_SIZE;
 wire [31:0] WOZ_TRACK1_FLUX_TOTAL_TICKS;
 wire        WOZ_TRACK1_WP;
+wire [7:0] WOZ_525_BIT_TIMING;   // WOZ INFO byte 39 (optimal bit timing) for the 5.25" disk
 wire [7:0]  WOZ_TRACK1_BIT_DATA_IN;  // Write byte from IWM to BRAM
 wire        WOZ_TRACK1_BIT_WE;       // Write enable from IWM
 wire [15:0] WOZ_TRACK1_BIT_WR_ADDR;  // Write address (latched)
@@ -1051,7 +1067,9 @@ woz_floppy_controller #(
 	.sd_rd(woz_sd_rd),
 	.sd_wr(woz_sd_wr),
 	.sd_ack(sd_ack[2]),
-	.sd_buff_addr(sd_buff_addr),
+	.sd_buff_addr(sd_buff_addr[8:0]),
+	.sd_buff_blk(sd_buff_addr[13:9]),
+	.sd_blk_cnt(sd_blk_cnt[2]),
 	.sd_buff_dout(sd_buff_dout),
 	.sd_buff_din(sd_buff_din[2]),
 	.sd_buff_wr(sd_buff_wr),
@@ -1112,7 +1130,9 @@ woz_floppy_controller #(
 	.sd_rd(woz_sd_525_rd),
 	.sd_wr(woz_sd_525_wr),
 	.sd_ack(sd_ack[3]),
-	.sd_buff_addr(sd_buff_addr),
+	.sd_buff_addr(sd_buff_addr[8:0]),
+	.sd_buff_blk(sd_buff_addr[13:9]),
+	.sd_blk_cnt(sd_blk_cnt[3]),
 	.sd_buff_dout(sd_buff_dout),
 	.sd_buff_din(sd_buff_din[3]),
 	.sd_buff_wr(sd_buff_wr),
@@ -1154,6 +1174,7 @@ woz_floppy_controller #(
 
 	// Write-protect flag from WOZ INFO chunk
 	.disk_write_protected(WOZ_TRACK1_WP),
+	.optimal_bit_timing(WOZ_525_BIT_TIMING),
 	.dbg_load_sum(),
 	.dbg_load_bytes(),
 	.dbg_load_blocks()

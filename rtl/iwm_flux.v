@@ -95,6 +95,7 @@ module iwm_flux (
 
     // Drive type selection
     input  wire        IS_35_INCH,      // 1 = 3.5" drive, 0 = 5.25" drive
+    input  wire [7:0]  OPTIMAL_BIT_TIMING, // WOZ INFO byte 39 for the 5.25" disk (0 = standard)
 
     // Per-drive status sensing (computed by flux_drive, muxed by iwm_woz)
     input  wire        SENSE_BIT,       // Status sense from selected drive
@@ -182,6 +183,14 @@ module iwm_flux (
     reg [3:0]  latch_hold_cnt;       // Latched read hold in bit-times (mode bit0)
     wire       latch_mode = SW_MODE[0];
     wire       latch_hold_active = (latch_hold_cnt != 4'd0);
+    // Q6 rising edge ($C08D). Switching Q6 high takes the LSS out of read-data
+    // mode and resets its shift register; going back to Q6L then resumes
+    // accumulating from empty. Programs use this to deliberately re-frame the
+    // incoming stream part-way through a nibble, so the bits that follow are
+    // read offset from the normal nibble starts (see WozTestImages/readme.txt,
+    // "READING OFFSET DATA STREAMS" -- Wings of Fury, Stickybear Town Builder).
+    reg        prev_sw_q6;
+    wire       q6_rising = SW_Q6 && !prev_sw_q6;
 
     // MAME async behavior: In async mode, completed bytes remain in m_data until overwritten by
     // the next completed byte. After the CPU performs an IWM register access while a valid byte
@@ -264,10 +273,58 @@ module iwm_flux (
     // the byte is latched. No windowing, no edge detection.
     // The window-based decoder introduces byte boundary alignment differences
     // that break timing-sensitive copy protection (nibble counting).
-    reg [5:0]  sr525_timer;          // Countdown: 56 clocks per bit cell
+    reg [5:0]  sr525_timer;          // Countdown: one bit cell (56 clocks at timing==32)
+    reg [9:0]  sr525_frac;           // Fractional remainder, thousandths of a cycle
     reg        sr525_flux_seen;      // Any flux transition during this bit cell?
     wire       sr525_active = !IS_35_INCH && !m_rw_mode && motor_decode_ok;
-    localparam [5:0] SR525_BIT_CELL = 6'd56;  // 4µs at 14MHz
+    // Bit cell scaled from the WOZ INFO "optimal bit timing" byte, matching
+    // flux_drive.v exactly (cell = timing*7/4, i.e. 56 at the standard timing
+    // 32). The drive and this shift register MUST derive the cell the same way;
+    // if they disagree the decode window walks off the emitted flux within a
+    // few dozen bits. timing==32 yields integer 56 with zero fraction, so
+    // standard disks behave exactly as before.
+    wire [7:0]  sr_eff_timing = (OPTIMAL_BIT_TIMING == 8'd0) ? 8'd32 :
+                                (OPTIMAL_BIT_TIMING > 8'd35) ? 8'd35 : OPTIMAL_BIT_TIMING;
+    wire [10:0] sr_timing_x7  = {3'b000, sr_eff_timing} * 11'd7;
+    wire [5:0]  SR525_BIT_CELL      = sr_timing_x7[7:2];
+    wire [9:0]  SR525_BIT_CELL_STEP = {8'd0, sr_timing_x7[1:0]} * 10'd250;
+
+    // 5.25" synchronous read follows the Disk II logic state sequencer (P6),
+    // which the IWM reproduces in sync mode (mode bit 0 = 0). The data
+    // register IS the shift register; the CPU always sees it live:
+    //  - QA (bit 7) = 0: each bit cell shifts the read pulse in from the right.
+    //  - QA = 1: the byte is HELD. Nothing is cleared by a CPU read. The first
+    //    read pulse that arrives while holding arms the restart; the next bit
+    //    cell then reloads the register with that pulse as the leading 1 plus
+    //    the current bit ({6'b0, 1, bit}). For adjacent nibbles this is the
+    //    "2 bit times" stall the IWM spec describes; a nibble followed by extra
+    //    zero bits stays latched for the whole zero run, which is what
+    //    First Math Adventures' RWTS checks (a second $C08C read 8 cycles after
+    //    the D5 must still return D5 -- WozTestImages/readme.txt, "WHAT IS THE
+    //    LIFESPAN OF THE DATA LATCH?").
+    //  - Q6 = 1, Q7 = 0 (READLOAD / write-protect sense): the sequencer shifts
+    //    the WP sense bit in from the LEFT every LSS cycle (0.5 us), so within
+    //    one bit cell the register is all-WP. Read pulses are discarded. We
+    //    model that as a full load while the mode is selected, which is what
+    //    Wings of Fury / Stickybear's "LDA $C08D,X" re-framing relies on.
+    // Modelled after OpenEmulator's abbreviated sequencer (as used by
+    // GSSquared, which boots every image in the WOZ test set on IIgs).
+    reg         sr525_seq_armed;     // QA-hold sub-state: pulse seen while holding
+    wire        sr525_readload = SW_Q6 && !SW_Q7;
+
+    task automatic load_sr525_timer;
+        reg [9:0] tmp;
+        begin
+            tmp = sr525_frac + SR525_BIT_CELL_STEP;
+            if (tmp >= 10'd1000) begin
+                sr525_timer <= SR525_BIT_CELL + 6'd1;
+                sr525_frac  <= tmp - 10'd1000;
+            end else begin
+                sr525_timer <= SR525_BIT_CELL;
+                sr525_frac  <= tmp;
+            end
+        end
+    endtask
 
     // Track wrap detection: reset fractional accumulators when disk completes a rotation
     // to prevent accumulated drift from causing byte framing misalignment.
@@ -363,7 +420,11 @@ module iwm_flux (
     wire       sr525_shift_now = sr525_active && (sr525_timer == 6'd1);
     // flux_edge folded in: matches the shift branch's same-cycle edge handling
     wire [7:0] sr525_next_rsh = {m_rsh[6:0], (sr525_flux_seen || flux_edge) ? 1'b1 : 1'b0};
-    wire       sr525_byte_completing = DISK_READY && sr525_shift_now && sr525_next_rsh[7];
+    // No completion while the sequencer is holding a byte (QA=1, sync mode) or
+    // in READLOAD; only a genuine left shift that sets bit 7 completes a byte.
+    wire       sr525_shifting = !sr525_readload && !(sync525_hold_mode && m_rsh[7]);
+    wire       sr525_byte_completing = DISK_READY && sr525_shift_now && sr525_shifting &&
+                                       sr525_next_rsh[7];
     wire       byte_completing = DISK_READY &&
                                  (sr525_byte_completing ||
                                   (shift_edge0_now && next_rsh_edge0[7]) ||
@@ -389,7 +450,12 @@ module iwm_flux (
     // until the next byte completes (which clears m_data_read). This prevents
     // duplicate reads in the ROM's BPL polling loop that broke D5 AA 96 prologues.
     // SmartPort mode bypasses this gate to match firmware expectations.
-    wire       data_ready = m_data[7] && (!m_data_read || smartport_mode_local);
+    // 5.25" sync (non-latch) reads present the live shift register and never
+    // clear on read; 3.5"/latch/async paths keep the read-consumes-it model.
+    wire       sync525_hold_mode = sr525_active && !latch_mode;
+    wire       data_ready = m_data[7] && (smartport_mode_local ||
+                                          (sync525_hold_mode ? m_rsh[7]
+                                                             : !m_data_read));
     wire [7:0] effective_data = data_ready ? m_data : 8'h00;
     // If a byte completes during an active data read, treat it as consumed.
     // FIX: Only consume if the latched byte was NOT from a mid-cycle byte completion.
@@ -532,6 +598,7 @@ module iwm_flux (
             half_window_frac <= 10'd0;
             rd_in_progress <= 1'b0;
             rd_was_data_reg <= 1'b0;
+            prev_sw_q6 <= 1'b0;
             rd_data_latched <= 8'h00;
             rd_from_completion <= 1'b0;
             cbus_handshake_ctr <= 2'd0;
@@ -555,7 +622,9 @@ module iwm_flux (
             clear_rsh_pending   <= 1'b0;
             latch_hold_cnt <= 4'd0;
             sr525_timer     <= SR525_BIT_CELL;
+            sr525_frac      <= 10'd0;
             sr525_flux_seen <= 1'b0;
+            sr525_seq_armed <= 1'b0;
             sync_run_count <= 4'd0;
             sync_resync_done <= 1'b0;
 `ifdef DEBUG_VERBOSE
@@ -635,6 +704,9 @@ module iwm_flux (
             // Approximate MAME's m_last_sync using bit-cell boundaries.
             if (shift_edge0_now || shift_edge1_now) begin
             end
+            prev_sw_q6 <= SW_Q6;
+            // Q6H re-framing for 5.25" is handled in the sr525 cell loop below
+            // (READLOAD: the register fills with the write-protect sense bit).
             if (clear_rsh_pending) begin
                 clear_rsh_pending <= 1'b0;
                 m_rsh <= 8'h00;
@@ -657,7 +729,9 @@ module iwm_flux (
                 m_rw_mode <= 1'b0;
                 rw_state <= S_IDLE;
                 sr525_timer <= SR525_BIT_CELL;
+                sr525_frac  <= 10'd0;
                 sr525_flux_seen <= 1'b0;
+                sr525_seq_armed <= 1'b0;
 `ifdef DEBUG_VERBOSE
                 $display("IWM_FLUX: Entering READ mode, m_data <= 0x00");
 `endif
@@ -840,22 +914,44 @@ module iwm_flux (
                         sr525_flux_seen <= 1'b1;
                     end
 
-                    if (sr525_timer == 6'd1) begin
-                        // End of bit cell: shift in the accumulated flux bit.
-                        // Include a same-cycle flux_edge: the `sr525_flux_seen <= 1'b0`
-                        // below textually follows the `if (flux_edge)` set above, so a
-                        // pulse landing on the shift cycle would otherwise be swallowed
-                        // (last nonblocking assign wins). The drive's bit-cell timer and
-                        // this timer are both free-running mod-56 counters, so a boot can
-                        // phase-lock EVERY edge onto shift cycles — zeros shift forever
-                        // (HW-only LR black-screen wedge; sim phases never align).
-                        // The 3.5" window path already handles this via flux_now.
-                        shifted_rsh = {m_rsh[6:0], (sr525_flux_seen || flux_edge) ? 1'b1 : 1'b0};
-                        m_rsh <= shifted_rsh;
+                    if (sr525_readload) begin
+                        // READLOAD: WP sense shifts in from the left every LSS
+                        // cycle; treat as a full load. Pulses are discarded.
+                        m_rsh <= {8{SENSE_BIT}};
+                        sr525_seq_armed <= 1'b0;
+                        if (sr525_timer == 6'd1) begin
+                            sr525_flux_seen <= 1'b0;
+                            load_sr525_timer();
+                        end else begin
+                            sr525_timer <= sr525_timer - 6'd1;
+                        end
+                    end else if (sr525_timer == 6'd1) begin
+                        // End of bit cell. Include a same-cycle flux_edge: the
+                        // `sr525_flux_seen <= 1'b0` below textually follows the
+                        // `if (flux_edge)` set above, so a pulse landing on the
+                        // shift cycle would otherwise be swallowed (last
+                        // nonblocking assign wins). The drive's bit-cell timer and
+                        // this timer are both free-running mod-56 counters, so a boot
+                        // can phase-lock EVERY edge onto shift cycles.
                         sr525_flux_seen <= 1'b0;
-                        sr525_timer <= SR525_BIT_CELL;
+                        load_sr525_timer();
 
-                        if (shifted_rsh[7]) begin
+                        if (sync525_hold_mode && m_rsh[7]) begin
+                            // QA=1: hold the completed byte until a pulse arrives,
+                            // then restart one cell later with that pulse as the
+                            // leading 1 (OpenEmulator sequencerState).
+                            if (!sr525_seq_armed) begin
+                                sr525_seq_armed <= (sr525_flux_seen || flux_edge);
+                            end else begin
+                                sr525_seq_armed <= 1'b0;
+                                m_rsh <= {6'b000000, 1'b1, (sr525_flux_seen || flux_edge)};
+                            end
+                        end else begin
+                            shifted_rsh = {m_rsh[6:0], (sr525_flux_seen || flux_edge) ? 1'b1 : 1'b0};
+                            m_rsh <= shifted_rsh;
+                            sr525_seq_armed <= 1'b0;
+
+                            if (shifted_rsh[7]) begin
                             // Byte complete - update data register and prologue tracking
                             prolog_last2 <= prolog_last1;
                             prolog_last1 <= shifted_rsh;
@@ -896,12 +992,12 @@ module iwm_flux (
                                 async_update_pending <= 1'b0;
                             end
                             if (latch_mode) begin
+                                // Latch mode: byte moves to m_data, shift register restarts.
                                 latch_hold_cnt <= 4'd8;
-                            end else begin
-                                // Sync mode: clear shift register after byte completion
-                                m_rsh <= 8'h00;
+                                clear_rsh_pending <= 1'b1;
                             end
-                            clear_rsh_pending <= 1'b1;
+                            // Sync mode: m_rsh keeps the byte (QA hold); see above.
+                            end
                         end
                     end else begin
                         sr525_timer <= sr525_timer - 6'd1;
@@ -1726,6 +1822,7 @@ module iwm_flux (
                 half_window_frac <= 10'd0;
                 flux_seen <= 1'b0;
                 sr525_timer <= SR525_BIT_CELL;
+                sr525_frac  <= 10'd0;
                 sr525_flux_seen <= 1'b0;
                 async_update_pending <= 1'b0;
                 latch_hold_cnt <= 4'd0;
@@ -2063,7 +2160,8 @@ module iwm_flux (
     // the real Disk II where data_r always reflects the current latch state.
     // Copy protection (nibble counting) reads the partial value at $825C to
     // measure timing between sync markers.
-    wire [7:0] data_out_data = (sr525_active && !data_ready) ? m_rsh : effective_data;
+    wire [7:0] data_out_data = sync525_hold_mode ? m_rsh :
+                               (sr525_active && !data_ready) ? m_rsh : effective_data;
 
     // Combinatorial bypass for same-cycle read:
     // if a byte completes during the read, return it immediately.

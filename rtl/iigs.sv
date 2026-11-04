@@ -219,6 +219,7 @@ module iigs
    input  [31:0]      WOZ_TRACK1_BIT_COUNT, // Total bits in track
    input              WOZ_TRACK1_LOAD_COMPLETE, // Pulses when 5.25" track load finishes
    input              WOZ_TRACK1_IS_FLUX,       // Track data is flux timing (not bitstream)
+   input      [7:0]   WOZ_525_BIT_TIMING,       // WOZ INFO byte 39 for the 5.25" disk (0 = standard)
    input  [31:0]      WOZ_TRACK1_FLUX_SIZE,     // Size in bytes of flux data
    input  [31:0]      WOZ_TRACK1_FLUX_TOTAL_TICKS, // Sum of FLUX bytes for timing normalization
    input              WOZ_TRACK1_WP,            // Write-protected flag from WOZ INFO chunk
@@ -233,6 +234,7 @@ module iigs
     input         UART_RXD,
     output        UART_RTS,
     input         UART_CTS,
+    input         serial_port_printer,
 
     // Sim-only: cross-wire SCC channel A<->B (TXD<->RXD) to emulate an
     // external serial loopback cable (for the diagnostic External Serial test).
@@ -302,6 +304,9 @@ module iigs
    
   logic [7:0]         bank_bef;
   logic [15:0]        addr_bef;
+  // Banks in which $C000-$C00F writes change the IIe soft switches. IO already
+  // limits the banks that reach I/O; E1 is excluded pending a hardware result.
+  wire                iie_switch_bank = (bank_bef != 8'he1);
 
   logic [23:0]        cpu_addr;
   logic [7:0]         cpu_dout;
@@ -373,6 +378,7 @@ module iigs
   logic               speaker_state;  // Apple II speaker toggle state
   logic [7:0]         DISK35;
   // floppy_motor_on is now a module output (for clock slowdown + dirty track flush)
+  wire iwm_enbl;  // IWM /ENBL state incl. motor-off holdover (feeds clock_divider slow mode)
   logic [7:0]         C02BVAL;
 
   logic [7:0]         VGCINT; //23
@@ -385,6 +391,11 @@ module iigs
   logic               INTCXROM;
   logic               ALTZP;
   logic               SLOTC3ROM;
+  // INTC8ROM: internal ROM owns $C800-$CFFF. Set by a valid CPU access to
+  // $C3xx while SLOTC3ROM=0, cleared by any access to $CFFF or by reset.
+  // Measured on physical ROM 01/03: $C1xx/$C7xx accesses do not set it,
+  // a later $C1xx access does not clear it, and C02D bit 3 has no effect.
+  logic               INTC8ROM;
   //logic               EIGHTYCOL;
   //logic               ALTCHARSET;
   //logic PAGE2;
@@ -494,6 +505,8 @@ module iigs
     .bank_latch(NEWVIDEO[0]),
     .shadow_all(CYAREG[4]),
     .SLTROMSEL(SLTROMSEL),
+    .INTCXROM(INTCXROM),
+    .INTC8ROM(INTC8ROM),
 
     .dbg_wdata(dout),
     .dbg_cpu_addr(cpu_addr),
@@ -760,11 +773,11 @@ module iigs
           12'h05c, 12'h05d, 12'h05e, 12'h05f:
             if (zip_unlocked) io_dout = zip_rdata;
 
-          12'h029: io_dout = NEWVIDEO;
+          12'h029: io_dout = NEWVIDEO & 8'hE1;   // bits 1-4 read 0 (physical ROM 01/03)
           12'h02a: io_dout = 'h0; // from gsplus
           12'h02b: io_dout = C02BVAL; // from gsplus
           12'h02c: io_dout = 'h0; // from gsplus
-          12'h02d: io_dout = SLTROMSEL;
+          12'h02d: io_dout = SLTROMSEL;          // stored masked with $F6 (bits 0,3 read 0)
           12'h02e: io_dout = V_M2[8:1];
           12'h02f: io_dout = {V_M2[0], H_CHAR};  // VA (V[0]) + Mega II horiz counter, per TN.IIGS.039
           12'h031: io_dout = DISK35;
@@ -923,43 +936,45 @@ module iigs
         // write
         begin
           case (addr[11:0])
-            // Apple II compatibility soft switches ($C000-$C00F)
-            // These should ONLY respond to bank $00 and $E0 accesses, NOT bank $01/$E1
-            // This prevents MVN/MVP block moves through bank $01 I/O space from corrupting state
+            // Apple II compatibility soft switches ($C000-$C00F).
+            // Physical ROM 01/03 MMUPROBE captures: a write to $C005 through bank 01
+            // (either CYAREG[4]) or through banks 02-7F with CYAREG[4]=1 sets RAMWRT,
+            // so these respond in every bank where IO is decoded. Bank E1 stays
+            // excluded only because it is unmeasured (see iie_switch_bank).
 `ifdef DEBUG_IO
-            12'h000: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**STORE80 %x",0); STORE80<= 1'b0 ; end end
-            12'h001: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**STORE80 %x",1); STORE80<= 1'b1 ; end end
-            12'h002: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**RAMRD %x",0); RAMRD<= 1'b0 ; end end
-            12'h003: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**RAMRD %x",1); RAMRD<= 1'b1 ; end end
-            12'h004: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**RAMWRT %x",0); RAMWRT<= 1'b0 ; end end
-            12'h005: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**RAMWRT %x",1); RAMWRT<= 1'b1 ; end end
-            12'h006: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**INTCXROM %x",0);INTCXROM<= 1'b0; end end
-            12'h007: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**INTCXROM %x",1);INTCXROM <= 1'b1; end end
-            12'h008: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**ALTZP %x",0); ALTZP<= 1'b0; end end
-            12'h009: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**ALTZP %x",1); ALTZP<= 1'b1; end end
-            12'h00A: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**SLOTC3ROM %x",0);SLOTC3ROM<= 1'b0; end end
-            12'h00B: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**SLOTC3ROM %x",1);SLOTC3ROM<= 1'b1; end end
-            12'h00C: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**EIGHTYCOL %x",0); EIGHTYCOL<= 1'b0; end end
-            12'h00D: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**EIGHTYCOL %x",1); EIGHTYCOL<= 1'b1; end end
-            12'h00E: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**ALTCHARSET %x",0); ALTCHARSET<= 1'b0; end end
-            12'h00F: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin $display("**ALTCHARSET %x",1); ALTCHARSET<= 1'b1; end end
+            12'h000: begin if (iie_switch_bank) begin $display("**STORE80 %x",0); STORE80<= 1'b0 ; end end
+            12'h001: begin if (iie_switch_bank) begin $display("**STORE80 %x",1); STORE80<= 1'b1 ; end end
+            12'h002: begin if (iie_switch_bank) begin $display("**RAMRD %x",0); RAMRD<= 1'b0 ; end end
+            12'h003: begin if (iie_switch_bank) begin $display("**RAMRD %x",1); RAMRD<= 1'b1 ; end end
+            12'h004: begin if (iie_switch_bank) begin $display("**RAMWRT %x",0); RAMWRT<= 1'b0 ; end end
+            12'h005: begin if (iie_switch_bank) begin $display("**RAMWRT %x",1); RAMWRT<= 1'b1 ; end end
+            12'h006: begin if (iie_switch_bank) begin $display("**INTCXROM %x",0);INTCXROM<= 1'b0; end end
+            12'h007: begin if (iie_switch_bank) begin $display("**INTCXROM %x",1);INTCXROM <= 1'b1; end end
+            12'h008: begin if (iie_switch_bank) begin $display("**ALTZP %x",0); ALTZP<= 1'b0; end end
+            12'h009: begin if (iie_switch_bank) begin $display("**ALTZP %x",1); ALTZP<= 1'b1; end end
+            12'h00A: begin if (iie_switch_bank) begin $display("**SLOTC3ROM %x",0);SLOTC3ROM<= 1'b0; end end
+            12'h00B: begin if (iie_switch_bank) begin $display("**SLOTC3ROM %x",1);SLOTC3ROM<= 1'b1; end end
+            12'h00C: begin if (iie_switch_bank) begin $display("**EIGHTYCOL %x",0); EIGHTYCOL<= 1'b0; end end
+            12'h00D: begin if (iie_switch_bank) begin $display("**EIGHTYCOL %x",1); EIGHTYCOL<= 1'b1; end end
+            12'h00E: begin if (iie_switch_bank) begin $display("**ALTCHARSET %x",0); ALTCHARSET<= 1'b0; end end
+            12'h00F: begin if (iie_switch_bank) begin $display("**ALTCHARSET %x",1); ALTCHARSET<= 1'b1; end end
 `else
-            12'h000: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin STORE80<= 1'b0 ; end end
-            12'h001: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin STORE80<= 1'b1 ; end end
-            12'h002: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin RAMRD<= 1'b0 ; end end
-            12'h003: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin RAMRD<= 1'b1 ; end end
-            12'h004: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin RAMWRT<= 1'b0 ; end end
-            12'h005: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin RAMWRT<= 1'b1 ; end end
-            12'h006: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin INTCXROM<= 1'b0; end end
-            12'h007: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin INTCXROM <= 1'b1; end end
-            12'h008: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin ALTZP<= 1'b0; end end
-            12'h009: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin ALTZP<= 1'b1; end end
-            12'h00A: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin SLOTC3ROM<= 1'b0; end end
-            12'h00B: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin SLOTC3ROM<= 1'b1; end end
-            12'h00C: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin EIGHTYCOL<= 1'b0; end end
-            12'h00D: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin EIGHTYCOL<= 1'b1; end end
-            12'h00E: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin ALTCHARSET<= 1'b0; end end
-            12'h00F: begin if (bank_bef == 8'h00 || bank_bef == 8'he0) begin ALTCHARSET<= 1'b1; end end
+            12'h000: begin if (iie_switch_bank) begin STORE80<= 1'b0 ; end end
+            12'h001: begin if (iie_switch_bank) begin STORE80<= 1'b1 ; end end
+            12'h002: begin if (iie_switch_bank) begin RAMRD<= 1'b0 ; end end
+            12'h003: begin if (iie_switch_bank) begin RAMRD<= 1'b1 ; end end
+            12'h004: begin if (iie_switch_bank) begin RAMWRT<= 1'b0 ; end end
+            12'h005: begin if (iie_switch_bank) begin RAMWRT<= 1'b1 ; end end
+            12'h006: begin if (iie_switch_bank) begin INTCXROM<= 1'b0; end end
+            12'h007: begin if (iie_switch_bank) begin INTCXROM <= 1'b1; end end
+            12'h008: begin if (iie_switch_bank) begin ALTZP<= 1'b0; end end
+            12'h009: begin if (iie_switch_bank) begin ALTZP<= 1'b1; end end
+            12'h00A: begin if (iie_switch_bank) begin SLOTC3ROM<= 1'b0; end end
+            12'h00B: begin if (iie_switch_bank) begin SLOTC3ROM<= 1'b1; end end
+            12'h00C: begin if (iie_switch_bank) begin EIGHTYCOL<= 1'b0; end end
+            12'h00D: begin if (iie_switch_bank) begin EIGHTYCOL<= 1'b1; end end
+            12'h00E: begin if (iie_switch_bank) begin ALTCHARSET<= 1'b0; end end
+            12'h00F: begin if (iie_switch_bank) begin ALTCHARSET<= 1'b1; end end
 `endif
             12'h010, 12'h026, 12'h027, 12'h070: begin
               // Note: $C010 (key strobe clear) now handled directly by ADB module
@@ -1002,9 +1017,9 @@ module iigs
 `endif
             12'h02b: C02BVAL <= dout; // from gsplus
 `ifdef DEBUG_IO
-            12'h02d: begin SLTROMSEL <= dout; $display("**SLTROMSEL <= %02x (slot7_external=%0d)", dout, dout[7]); end
+            12'h02d: begin SLTROMSEL <= dout & 8'hF6; $display("**SLTROMSEL <= %02x (slot7_external=%0d)", dout, dout[7]); end
 `else
-            12'h02d: begin SLTROMSEL <= dout; end
+            12'h02d: begin SLTROMSEL <= dout & 8'hF6; end  // bits 0,3 not implemented: physical capture reads v & F6, and C02D.3 does not change slot 3
 `endif
             12'h030: begin if (phi2) speaker_state <= ~speaker_state; end
             12'h031: begin
@@ -1869,14 +1884,26 @@ vgc vgc(
 
 
 
-// Floating bus: reads from non-existent RAM banks return the bank number
-wire [7:0] floating_bus = (bank_bef >= RAMSIZE && bank_bef < 8'hE0) ? bank_bef : 8'h80;
+// $C800-$CFFF with no owner (INTCXROM=0, INTC8ROM=0): no card drives the
+// bus, so the read returns the Mega II floating-bus byte (physical captures
+// show varying video/bus data here).
+wire c8_slot_bank = ((bank_bef == 8'h00 || bank_bef == 8'h01) && !shadow[6]) ||
+                    bank_bef == 8'he0 || bank_bef == 8'he1;
+wire c800_float = ~we && c8_slot_bank && addr_bef >= 16'hc800 && addr_bef <= 16'hcfff && ~rom_ce;
+wire [7:0] mega2_float = !m2_bus_driven ? cpu_last_bus :
+                         (NEWVIDEO[7] && shr_pix_win) ? shr_bus_byte : video_data;
+
+// Floating bus: reads from non-existent RAM banks return the bank number.
+// On ROM 01, banks FC/FD are unpopulated and read the same way (physical capture).
+wire [7:0] floating_bus = ((bank_bef >= RAMSIZE && bank_bef < 8'hE0) ||
+                           (rom_select && (bank_bef == 8'hFC || bank_bef == 8'hFD))) ? bank_bef : 8'h80;
 
 wire [7:0] din =
   (io_select[7] == 1'b1 | device_select[7] == 1'b1 | (hdd_dma & hdd_dma_we)) ? HDD_DO :
   (fastram_ce | rom_ce) ?  top_din :
   slowram_ce ? slowram_dout :
   slot_ce ? slot_dout :
+  c800_float ? mega2_float :
   floating_bus;
 
   wire [7:0] HDD_DO;
@@ -1901,6 +1928,17 @@ wire [7:0] din =
   // Last byte the CPU transferred on its data bus (operand fetches included):
   // the value a floating-bus read sees when the Mega II is not driving.
   always @(posedge CLK_14M) if (phi2) cpu_last_bus <= we ? dout : cpu_din;
+
+  always @(posedge CLK_14M) begin
+    if (reset)
+      INTC8ROM <= 1'b0;
+    else if (phi2 && valid && ~hdd_dma && c8_slot_bank) begin
+      if (addr_bef == 16'hcfff)
+        INTC8ROM <= 1'b0;
+      else if (addr_bef[15:8] == 8'hc3 && ~SLOTC3ROM)
+        INTC8ROM <= 1'b1;
+    end
+  end
 
 `ifdef DEBUG_VERBOSE
   // Debug: log every C026 read showing what cpu_din resolves to
@@ -2424,6 +2462,7 @@ wire ready_out;
       .WOZ_TRACK1_BIT_COUNT(WOZ_TRACK1_BIT_COUNT),
       .WOZ_TRACK1_LOAD_COMPLETE(WOZ_TRACK1_LOAD_COMPLETE),
       .WOZ_TRACK1_IS_FLUX(WOZ_TRACK1_IS_FLUX),
+      .WOZ_525_BIT_TIMING(WOZ_525_BIT_TIMING),
       .WOZ_TRACK1_FLUX_SIZE(WOZ_TRACK1_FLUX_SIZE),
       .WOZ_TRACK1_FLUX_TOTAL_TICKS(WOZ_TRACK1_FLUX_TOTAL_TICKS),
       .WOZ_TRACK1_WP(WOZ_TRACK1_WP),
@@ -2432,6 +2471,7 @@ wire ready_out;
       .WOZ_TRACK1_BIT_WR_ADDR(WOZ_TRACK1_BIT_WR_ADDR),
       // Motor status for clock slowdown
       .FLOPPY_MOTOR_ON(floppy_motor_on),
+      .IWM_ENBL(iwm_enbl),
       .FLOPPY35_MOTOR_ON(floppy35_motor_on),
       .DRIVE35_EJECT_REQ(drive35_eject_req)
   );
@@ -2505,18 +2545,40 @@ wire ready_out;
             .speaker_state(speaker_state)
             );
 
-  // SCC (Serial Communications Controller) - Zilog 8530
-  // Apple IIgs port assignment:
-  //   Modem port (Port 1, Slot 1) = SCC Channel B (C038/C03A)
-  //   Printer port (Port 2, Slot 2) = SCC Channel A (C039/C03B)
-  // ROM selftest uses internal loopback (WR14 bit 4), not cross-channel,
-  // so external wiring doesn't affect selftest results.
-  // SCC serial data lines. In --serial-loopback mode each channel's TXD is
-  // routed to the other channel's RXD (what a physical loopback cable does),
-  // so the diagnostic External Serial test can run headlessly.
+  // =========================================================================
+  // SCC (Serial Communications Controller) - Zilog Z8530
+  //
+  // Channel, Slot, and Register Mapping Reference:
+  // - Apple IIgs Hardware Reference (2nd Ed), Chapter 7 "Built-in I/O Ports and Clock"
+  //   (Table 7-10 "SCC I/O Port Addresses", p. 161) and Chapter 8 "Expansion Slots"
+  //   (Slot Register $C02D, pp. 152-154).
+  //
+  // Hardware Architecture & Historical Rationale:
+  //   Channel A -> Printer Port (Port 1 / Slot 1): Command/Status $C039, Data $C03B
+  //   Channel B -> Modem Port   (Port 2 / Slot 2): Command/Status $C038, Data $C03A
+  //
+  // NOTE ON MACINTOSH vs. APPLE IIGS DIFFERENCE:
+  // - On the Macintosh: Channel A is the Modem port and Channel B is the Printer port.
+  // - On the Apple IIgs: Apple assigned Channel A to Slot 1 (Printer Port) and Channel B
+  //   to Slot 2 (Modem Port) to preserve classic Apple II slot conventions:
+  //     Slot 1 = Printer
+  //     Slot 2 = Modem
+  //
+  // OSD Switching (serial_port_printer = status[26]):
+  //   0 = Modem (Slot 2, Channel B) routed to top-level UART pins.
+  //   1 = Printer (Slot 1, Channel A) routed to top-level UART pins.
+  // Both channels have full, symmetric hardware flow control (CTS/RTS):
+  //   - The active channel connects to physical UART_TXD, UART_RXD, UART_RTS, UART_CTS.
+  //   - The inactive channel is safely idled: RXD held high (mark), CTS held low (clear).
+  // In --serial-loopback mode, Channel A and Channel B TXD/RXD and RTS/CTS are cross-wired
+  // (external loopback cable) for diagnostic testing.
+  // =========================================================================
   wire scc_txd_a;
   wire scc_txd_b;
-  assign UART_TXD = scc_txd_b;   // Channel B still drives the MiSTer UART
+  wire scc_rts_a;
+  wire scc_rts_b;
+  assign UART_TXD = serial_port_printer ? scc_txd_a : scc_txd_b;
+  assign UART_RTS = serial_port_printer ? scc_rts_a : scc_rts_b;
 
   scc_iigs_wrapper scc_inst(
             .clk_14m(CLK_14M),
@@ -2530,16 +2592,16 @@ wire ready_out;
             .wdata(scc_din),
             .rdata(scc_dout),
             .irq_n(scc_irq_n),
-            // Channel A = Printer port (no external connection)
+            // Channel A = Printer port (Slot 1)
             .txd_a(scc_txd_a),
-            .rxd_a(serial_loopback ? scc_txd_b : 1'b1),  // loopback: A RX <- B TX
-            .rts_a(),
-            .cts_a(1'b0),       // Always clear to send
-            // Channel B = Modem port → MiSTer UART
+            .rxd_a(serial_loopback ? scc_txd_b : (serial_port_printer ? UART_RXD : 1'b1)),
+            .rts_a(scc_rts_a),
+            .cts_a(serial_loopback ? scc_rts_b : (serial_port_printer ? UART_CTS : 1'b0)),
+            // Channel B = Modem port (Slot 2)
             .txd_b(scc_txd_b),
-            .rxd_b(serial_loopback ? scc_txd_a : UART_RXD),  // loopback: B RX <- A TX
-            .rts_b(UART_RTS),
-            .cts_b(UART_CTS),
+            .rxd_b(serial_loopback ? scc_txd_a : (serial_port_printer ? 1'b1 : UART_RXD)),
+            .rts_b(scc_rts_b),
+            .cts_b(serial_loopback ? scc_rts_a : (serial_port_printer ? 1'b0 : UART_CTS)),
             .dsr_a(1'b0)        // DSR asserted (active low on real hardware)
 				);
 
@@ -3005,6 +3067,7 @@ clock_divider clk_div_inst (
     .is_rom_access(rom_ce),
     .reset(reset),
     .stretch(1'b0),  // legacy unused stretch input (superseded by ph0_*_vid below)
+    .disk_motor_hold(iwm_enbl && !DISK35[6]),  // 5.25" /ENBL (with mode-bit-2 holdover) keeps 1 MHz through spin-down
     .ph0_phase_vid(PH0_PHASE_VID),  // VGC/Mega II PH0 phase (Stage 1: wired, not yet consumed)
     .ph0_stb_vid(PH0_STB_VID),      // VGC/Mega II PH0 boundary strobe
     .line_stb_vid(LINE_STB_VID),    // VGC/Mega II line-boundary strobe (PH0 grid anchor)
