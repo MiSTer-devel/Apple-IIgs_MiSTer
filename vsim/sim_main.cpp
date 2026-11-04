@@ -4235,6 +4235,7 @@ std::string disk_image = "";   // HDD unit 0 (--disk)
 std::string disk_image2 = "";  // HDD unit 1 (--disk2)
 std::string woz_image = "";  // WOZ disk image (flux-based)
 int woz_mount_index = -1;     // Auto-detected: 4=5.25", 5=3.5"
+int woz_mount_frame = -1;     // --woz-mount-frame: insert the WOZ disk at this frame (models mounting while the ROM is booting)
 
 // Convert a non-WOZ floppy image (.po/.dsk/.do/.nib/.2mg) to a temporary WOZ
 // using the shared codec (iigs_fmt), so --woz accepts any floppy format. If the
@@ -4767,6 +4768,7 @@ void show_help() {
 	printf("  --disk <filename>             Use specified HDD image (slot 7 unit 0, no disk mounted by default)\n");
 	printf("  --disk2 <filename>            Use specified HDD image for slot 7 unit 1\n");
 	printf("  --woz <filename>              Floppy image: .woz, or .po/.dsk/.do/.nib/.2mg (auto-converted to WOZ)\n");
+	printf("  --woz-mount-frame <frame>     Insert the --woz disk at this frame instead of at power-on (headless)\n");
 	printf("  --enable-csv-trace            Enable CSV memory trace logging (vsim_trace.csv)\n");
 	printf("  --dump-csv-after <frame>      Start dumping vsim_trace.csv after a frame number\n");
 	printf("  --beam-trace <start>[,<end>]  Log beam pos (V,H_CHAR) per CPU cycle -> beam_trace.csv\n");
@@ -5089,6 +5091,10 @@ int main(int argc, char** argv, char** env) {
             disk_image2 = argv[i + 1];
             printf("Using HDD unit 1 image: %s\n", disk_image2.c_str());
             i++; // Skip the next argument since it's the filename
+        } else if (strcmp(argv[i], "--woz-mount-frame") == 0 && i + 1 < argc) {
+            woz_mount_frame = std::stoi(argv[i + 1]);
+            printf("Will insert the WOZ disk at frame %d\n", woz_mount_frame);
+            i++;
         } else if (strcmp(argv[i], "--woz") == 0 && i + 1 < argc) {
             // Accept any floppy format: convert .po/.dsk/.do/.nib/.2mg to WOZ.
             woz_image = prepareFloppyImage(argv[i + 1]);
@@ -5369,7 +5375,7 @@ int main(int argc, char** argv, char** env) {
         printf("Mounting disk image: %s to index 3 (HDD slot 7 unit 1)\n", disk_image2.c_str());
         blockdevice.MountDisk(disk_image2.c_str(), 3);
     }
-    if (!woz_image.empty() && woz_mount_index >= 0) {
+    if (!woz_image.empty() && woz_mount_index >= 0 && woz_mount_frame < 0) {
         printf("Mounting WOZ image: %s to index %d\n", woz_image.c_str(), woz_mount_index);
         blockdevice.MountDisk(woz_image.c_str(), woz_mount_index);
     }
@@ -5470,6 +5476,11 @@ int main(int argc, char** argv, char** env) {
                        save_memory_dump(video.count_frame);
                        memory_dump_frames.erase(it2);
                    }
+               }
+               if (woz_mount_frame >= 0 && video.count_frame >= woz_mount_frame) {
+                   printf("Inserting WOZ image at frame %d: %s to index %d\n", video.count_frame, woz_image.c_str(), woz_mount_index);
+                   blockdevice.MountDisk(woz_image.c_str(), woz_mount_index);
+                   woz_mount_frame = -1;
                }
                // Trigger reset at frame (for testing reset functionality)
                if (reset_at_frame_enabled && video.count_frame == reset_at_frame) {
