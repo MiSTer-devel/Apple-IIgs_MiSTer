@@ -140,6 +140,16 @@ reg [3:0] kbd_fifo_tail;                 // FIFO tail pointer
 reg [3:0] kbd_fifo_count;                // Number of keys in FIFO
 reg kbd_strobe;                          // Keyboard strobe bit
 
+// Any-key-down ($C010 bit 7, GLU register 5), following the ADB
+// microcontroller firmware (see threefivefixes doc/adb_firmware/README.md):
+// the firmware sets AKD when it delivers a key and clears it once no key is
+// waiting and the release condition holds. ROM 3 (M50741) clears when the
+// most recently pressed character key is released; ROM 01 (M50740) only
+// when no character key is held at all.
+reg [127:0] akd_held;                    // ADB keycodes of character keys held (ROM 01 rule)
+reg   [6:0] akd_last_key;                // last character key pressed (ROM 3 rule)
+reg         akd_last_released;           // ...and it has been released
+
 // ADB-side 1-deep staging buffer for Register 0 events. When a press
 // arrives and the host hasn't yet read the previous event
 // (device_data_pending[2] still 1), subsequent press/release events land
@@ -686,6 +696,11 @@ always @(*) begin
         dout_comb_reg = K;
       end
     end
+    8'h10: begin  // $C010 - bit 7 any-key-down (GLU register 5), bits 6:0 key
+      if (rw) begin
+        dout_comb_reg = {akd, K[6:0]};
+      end
+    end
     default: begin
       // Use registered dout for other addresses
       dout_comb_reg = dout;
@@ -787,6 +802,9 @@ always @(posedge CLK_14M) begin
     apple_shift <= 1'b0;
     apple_ctrl <= 1'b0;
     akd <= 1'b0;
+    akd_held <= 128'd0;
+    akd_last_key <= 7'd0;
+    akd_last_released <= 1'b1;
     K <= 8'd0;
     kbd_strobe <= 1'b0;
     
@@ -870,6 +888,12 @@ always @(posedge CLK_14M) begin
       clk_60hz_counter <= clk_60hz_counter + 18'd1;
     end
     
+    // Any-key-down release. Runs every clock; a key press in the same cycle
+    // is handled below and wins (later non-blocking assignment).
+    if (akd && kbd_fifo_count <= 4'd1 &&
+        (rom_select ? (akd_held == 128'd0) : akd_last_released))
+      akd <= 1'b0;
+
     // PS/2 keyboard event processing
     // MiSTer toggles bit 10 on every key press/release - if toggle changed, it's a valid new event
     if (ps2_key[10] != ps2_key_toggle_prev) begin
@@ -977,6 +1001,14 @@ always @(posedge CLK_14M) begin
               caps_lock_state
             );
 
+            // Character key down: any-key-down on (modifiers map to $FF).
+            if (temp_iie_char != 8'hFF) begin
+              akd <= 1'b1;
+              akd_held[temp_apple_key[6:0]] <= 1'b1;
+              akd_last_key <= temp_apple_key[6:0];
+              akd_last_released <= 1'b0;
+            end
+
             // IIgs Ctrl-OpenApple-Esc -> Desk Manager (Control Panel CDA).
             // On Escape ($35) key-DOWN while Control+Command are held, the ADB
             // GLU flags it for the firmware via $C026 bit5 + an ADB data IRQ
@@ -1033,7 +1065,6 @@ always @(posedge CLK_14M) begin
               $display("ADB: Setting K register: PS2=%03h Apple=%02h ASCII=%02h", ps2_key[8:0], temp_apple_key, temp_iie_char);
 `endif
               K <= {1'b1, temp_iie_char[6:0]};  // Set strobe bit + 7-bit ASCII
-              akd <= 1'b1;  // Any key down
             end
           end else begin
             // Key released
@@ -1066,7 +1097,11 @@ always @(posedge CLK_14M) begin
             // Raise keyboard SRQ for raw-event consumers (autopoll off).
             if (kbd_autopoll_off) kbd_srq_pending <= 1'b1;
 
-            akd <= 1'b0;  // Clear any key down
+            // Release: the any-key-down clear itself happens above, once no
+            // key is waiting (firmware behaviour).
+            akd_held[temp_apple_key[6:0]] <= 1'b0;
+            if (temp_apple_key[6:0] == akd_last_key)
+              akd_last_released <= 1'b1;
           end
         end
       end
@@ -2116,7 +2151,7 @@ always @(posedge CLK_14M) begin
       
       8'h10: begin  // $C010 - Keyboard strobe clear (ANY access clears strobe)
         if (rw) begin
-          dout <= K;  // Return K value on read
+          dout <= {akd, K[6:0]};  // Any-key-down + key (Hardware Reference, ADB firmware)
         end
         // Clear strobe on ANY access (read or write) - matches GSplus behavior
         if (cen & strobe & !c010_processed_this_strobe) begin
