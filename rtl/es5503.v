@@ -59,8 +59,10 @@ module es5503
    // Oscillator state
    reg [23:0]	     accumulator [31:0];
    reg [31:0]	     irq_pending;
-   reg [4:0]	     irq_stack [31:0];
-   reg [4:0]	     irq_sp;
+   reg [4:0]	     irq_fifo [31:0];   // Interrupting oscillators, oldest first
+   reg [4:0]	     irq_head;
+   reg [4:0]	     irq_tail;
+   reg [4:0]	     irq_last;          // The OIR's oscillator once the queue is empty
 
    // Accumulator adder / wrap detection
    wire [24:0]	     accumulator_sum;
@@ -170,12 +172,13 @@ module es5503
 	   6: data_out <= r_table_size[reg_addr[4:0]];
 	   7: case (reg_addr[1:0])
 		0: begin // OIR
+		   // The GLU takes data_out before host_en, so it must already show
+		   // the oscillator this read removes from the queue
+		   data_out <= {~irq, 1'b1, irq ? irq_fifo[irq_head] : irq_last, 1'b1};
 		   if (irq && host_en) begin
-		      data_out <= {~irq, 1'b1, irq_stack[irq_sp - 1], 1'b1};
-		      irq_pending[irq_stack[irq_sp - 1]] <= 1'b0;
-		      irq_sp <= irq_sp - 1'd1;
-		   end else begin
-		      data_out <= {~irq, 1'b1, irq_stack[0], 1'b1};
+		      irq_pending[irq_fifo[irq_head]] <= 1'b0;
+		      irq_last <= irq_fifo[irq_head];
+		      irq_head <= irq_head + 1'd1;
 		   end
 		end
 		1: data_out <= {2'b0, oscs_enabled, 1'b0};
@@ -218,8 +221,8 @@ module es5503
 	       // IRQ handling
 	       if (r_control[current_osc][3] && !irq_pending[current_osc]) begin
 		  irq_pending[current_osc] <= 1;
-		  irq_stack[irq_sp] <= current_osc;
-		  irq_sp <= irq_sp + 1'd1;
+		  irq_fifo[irq_tail] <= current_osc;
+		  irq_tail <= irq_tail + 1'd1;
 	       end
 	    end // if (accumulator_wrapped || r_sample_data[current_osc] == 8'h00)
 
@@ -267,8 +270,9 @@ module es5503
 	 current_refresh <= 0;
 	 for (i=0; i < 32; i=i+1) accumulator[i] <= 0;
 	 irq_pending <= 0;
-	 irq_sp <= 0;
-	 irq_stack[0] <= 5'h1f;
+	 irq_head <= 0;
+	 irq_tail <= 0;
+	 irq_last <= 5'h1f;
 	 sound_out <= 16'h0000;
       end
    end // always @ (posedge clk)
