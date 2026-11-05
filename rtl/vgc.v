@@ -180,7 +180,9 @@ reg [3:0] shrg_b_pix;
 
 // First pixel combinational computation - bypasses pipeline latency for H=32
 // At H=32, video_data has first pixel byte, compute color combinationally
-wire [3:0] first_pix_idx_320 = video_data[7:4];  // 320 mode: high nibble is first pixel
+// 320 mode: high nibble is the first pixel. In fill mode a zero first pixel
+// repeats the line's seeded fill colour (last_pixel, set at H==BL-1).
+wire [3:0] first_pix_idx_320 = (scb[5] && video_data[7:4] == 4'd0) ? last_pixel : video_data[7:4];
 wire [3:0] first_pix_idx_640 = {2'b10, video_data[7:6]};  // 640 mode: bits 7:6, palette colors 8-11
 wire [3:0] first_pix_r = scb[7] ? r_shrg[first_pix_idx_640] : r_shrg[first_pix_idx_320];
 wire [3:0] first_pix_g = scb[7] ? g_shrg[first_pix_idx_640] : g_shrg[first_pix_idx_320];
@@ -237,6 +239,11 @@ begin
 		video_addr_shrg <= video_addr_shrg + 1'b1;
 		video_addr_shrg_1 <= video_addr_shrg_1 + 1'b1;
 	end else if (H==(BL-1)) begin
+	   // Fill mode starts each line with a colour chosen by SCB[4:0] (MAME's
+	   // fillmode_init, from John Brooks' hardware tests: index 2 when
+	   // SCB[4:0] is 0, else SCB[3:0]). Without this, a line whose first pixels are 0
+	   // inherited the previous line's last colour (#7 Delta Demo brown band).
+	   last_pixel <= (scb[4:0] == 5'd0) ? 4'd2 : scb[3:0];
 	   // Setup pixel data address: $2000 + (scanline * 160 bytes/line)
 	   video_addr_shrg_1 <= 23'h12000 + ({15'd0, V[7:0]} * 23'd160);
 	   video_addr_shrg <= 23'h12000 + ({15'd0, V[7:0]} * 23'd160);
@@ -315,6 +322,10 @@ begin
 				end
 			endcase
 		end
+		// The first 320-mode pixel bypasses this pipeline (first_pix at
+		// H==BL+1), so it has to update the fill colour here.
+		if (H == (BL+1) && !scb[7] && !(scb[5] && video_data[7:4] == 4'd0))
+			last_pixel <= video_data[7:4];
 
 	end else if (H == 10'd750) begin
 		// --- bus-visible late-HBL prefetch (real VGC bus schedule; the
@@ -468,12 +479,16 @@ reg [10:0] dhr_win;
 reg [15:0] dhr_hold;
 reg [1:0]  dhr_nib;
 always @(posedge clk_vid) if (ce_pix) begin
-    if (H < BLE || H >= BRE + 10'd8) begin
+    // Start one tick early so the window also holds head-start bit 0 (BLE-2).
+    if (H < BLE - 10'd1 || H >= BRE + 10'd8) begin
         dhr_win  <= 11'd0;
         dhr_nib  <= 2'd0;
     end else begin
         dhr_win <= {dhr_win[9:0], graphics_pixel};
-        if (H[1:0] == DHR_PHASE && H >= BLE + 10'd5) begin
+        // First group latch at BLE+4, so it is valid when the window opens
+        // at BLE+5. Latching at BLE+5 showed the previous line's last group
+        // in the first 4 pixels (#4 DHR left-edge garbage).
+        if (H[1:0] == DHR_PHASE && H >= BLE + 10'd4) begin
             dhr_hold <= dhr_lut[{dhr_win[9:0], graphics_pixel}];
             dhr_nib  <= 2'd0;
         end else
@@ -489,9 +504,13 @@ wire [11:0] dhr_rgb   = dhr_pal(dhr_color);
 // at BLE-2/BLE-1, pre-shifted preload from bit 2), stream bit j displays at
 // H = BLE-1+j -- window [BLE-1, BRE-2] = the full 560px. The color decode
 // consumes the same corrected stream with its 6px LUT latency next to it.
-// Other GFX modes trail by 5px (apple2_shift_reg).
-wire [9:0] gfx_lb = dhires_mode ? (DHRG_MONO ? BLE-10'd1 : BLE + 10'd4) : (BLE + 10'd5);
-wire [9:0] gfx_rb = dhires_mode ? (DHRG_MONO ? BRE-10'd2 : BRE + 10'd3) : (BRE + 10'd4);
+// Color dhires and hires trail by 5px (dhr_lut / apple2_shift_reg), so pixel
+// j displays at BLE+5+j. Lores goes through lores_rgb_d and lands with the
+// text, at BLE+1+j. Windows are inclusive and exactly 560px wide.
+wire [9:0] gfx_lb = dhires_mode ? (DHRG_MONO ? BLE-10'd1 : BLE + 10'd5) :
+                    lores_mode  ? (BLE + 10'd1) : (BLE + 10'd5);
+wire [9:0] gfx_rb = dhires_mode ? (DHRG_MONO ? BRE-10'd2 : BRE + 10'd4) :
+                    lores_mode  ? BRE : (BRE + 10'd4);
 // ---------------------------------------------------------------------------
 
 // Apple II color generation logic
@@ -572,7 +591,12 @@ always @(*) begin
 end
 
 // Graphics RGB calculation - different for lores vs hires
-wire [11:0] graphics_rgb = lores_mode ? palette_rgb_r[graphics_color] : 
+// Lores colour is valid one tick before text bit 0 (graphics_color loads at
+// the byte reload, text_shift_reg a tick later), so delay it one pixel to
+// register lores with text. Without the delay it sat 1px left of the text.
+reg [11:0] lores_rgb_d;
+always @(posedge clk_vid) if (ce_pix) lores_rgb_d <= palette_rgb_r[graphics_color];
+wire [11:0] graphics_rgb = lores_mode ? lores_rgb_d : 
                                        {apple2_r[7:4], apple2_g[7:4], apple2_b[7:4]};
 
 // ce(ce_pix): gate the char-ROM read to the pixel-clock enable so it samples
@@ -1017,18 +1041,19 @@ begin
 
 
 
-// Mode-dependent border generation (704-pixel visible area, H=0-703)
-// Apple II TEXT modes: |Left Border(72px)|Active Display(560px)|Right Border(72px)| = 704 total
-//   Text has minimal pipeline latency, uses original timing
-// Apple II GFX modes:  |Left Border(77px)|Active Display(560px)|Right Border(67px)| = 704 total
-//   Graphics has 5-pixel pipeline latency (apple2_shift_reg), shift border right
-// SHRG modes:          |Left Border(32px)|Active Display(640px)|Right Border(32px)| = 704 total
-// Border generation:
-// Apple II TEXT: active display H=72-631 (560 pixels), V=16-207 (192 lines)
-// Apple II GFX:  active display H=77-636 (560 pixels), V=16-207 (192 lines)
-// SHRG modes:    active display H=32-671 (640 pixels), V=16-215 (200 lines)
+// Mode-dependent border generation. Each window is exactly 560 (IIe) or
+// 640 (SHR) pixels and starts where that mode's pixel 0 lands:
+//   text, lores:          H = BLE+1 .. BRE     (text_shift_reg / lores_rgb_d)
+//   hires, color dhires:  H = BLE+5 .. BRE+4   (apple2_shift_reg / dhr_lut latency)
+//   mono dhires:          H = BLE-1 .. BRE-2   (head-start bits at BLE-2/BLE-1)
+//   SHR:                  H = BL+1  .. BR-1
+// Hires and color dhires therefore sit 4px right of text. Moving them means
+// fetching 4 dots earlier, and the IIe floating bus reads video_data on this
+// fetch schedule (tuned to FLOATBUS captures), so that needs a display-side
+// line buffer like shr_line first.
 if ((!SHRG && GR && ((H < gfx_lb || H > gfx_rb) || (V < V_SCAN || V >= BBE))) ||
-    (!SHRG && !GR && ((H < BLE || H >= BRE) || (V < V_SCAN || V >= BBE))) ||
+    // Text bit 0 is valid at BLE+1 (text_shift_reg loads at xpos 0 = BLE).
+    (!SHRG && !GR && ((H < BLE + 10'd1 || H >= BRE + 10'd1) || (V < V_SCAN || V >= BBE))) ||
     (SHRG && ((H < (BL+1) || H >= BR || V < V_SCAN || V >= BB))))  // SHRG: 33px left border (mem latency), 639px active
 begin
 R <= {BORGB[11:8],BORGB[11:8]};
