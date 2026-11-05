@@ -146,6 +146,21 @@ incompatible PRAM layouts and each gets its own block. A zero-filled file is
 expected: the ROM's PRAM checksum fails on a blank block and the firmware simply
 re-defaults itself, so a fresh file cannot brick anything.
 
+### How to: run at 50 Hz (PAL)
+
+There is no OSD option for the video standard, because the IIgs keeps it in
+PRAM like a real machine. The firmware reads it at every boot and sets
+LANGSEL (`$C02B`) bit 4, which switches the core to 312-line 50 Hz timing.
+
+1. Mount `Apple-IIgs.RAM` as described above, so the setting is kept.
+2. Open the Control Panel: press **Ctrl+OpenApple+Esc** (Alt is OpenApple)
+   and choose **Control Panel**.
+3. Go to **Display** and set **Hertz** to **50**. Leave the Control Panel.
+4. Use **Save NVRAM** in the OSD, then reset.
+
+To go back to 60 Hz, set **Hertz** to **60** the same way and save again.
+ROM 01 and ROM 3 keep separate PRAM, so set it on each ROM you use.
+
 ## Development & Simulation
 
 The core can be simulated with Verilator. Build and run it from the `vsim/`

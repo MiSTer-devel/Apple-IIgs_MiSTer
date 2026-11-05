@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### CPU (65C816)
+- `WAI` now waits until IRQ is asserted (low). Before, it woke at once when no IRQ was pending, and stayed stopped when one was pending with I set. Thanks to [slaapliedje](https://github.com/slaapliedje) (PR #12).
+- NMI edges are no longer lost. The edge is held until the NMI is actually taken, instead of being cleared at the end of whatever instruction was running. Thanks to [slaapliedje](https://github.com/slaapliedje) (PR #12), based on djjohnson13p's fork.
+
+### Keyboard (ADB)
+- `$C010` bit 7 is now any-key-down, so held keys work in games such as Prince of Persia (#3). It follows the ADB microcontroller firmware: on ROM 3 it clears when the most recently pressed key is released, and on ROM 01 when no key is held. Thanks to [slaapliedje](https://github.com/slaapliedje) for the same fix in PR #13 and the ROM 03 hardware check.
+
+### Video (VGC)
+- Double Hi-Res no longer shows the previous line's last pixels at the left edge (#4).
+- Super Hi-Res fill mode starts each line from the colour the hardware uses, which removes the brown band in the Delta Demo (#7).
+- Lo-res and text are no longer clipped at the edges.
+
+### TransWarp GS
+- The TransWarp GS CDA now installs at boot and opens from the Desk Accessories menu on ROM 01 and ROM 3 (#1).
+
+### Serial (SCC)
+- The decoded register resets are synchronous, so the ROM self-test passes test 06.
+
+### Settings
+- 50 Hz needs no OSD option: set Control Panel → Display → Hertz and save NVRAM. See the README (#2).
+
 ## 2026-11-04 (`releases/Apple-IIgs_20261104.rbf`)
 
 ### Memory (MMU)
