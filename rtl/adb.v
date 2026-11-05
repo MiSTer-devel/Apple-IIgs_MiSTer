@@ -139,6 +139,7 @@ reg [3:0] kbd_fifo_head;                 // FIFO head pointer
 reg [3:0] kbd_fifo_tail;                 // FIFO tail pointer
 reg [3:0] kbd_fifo_count;                // Number of keys in FIFO
 reg kbd_strobe;                          // Keyboard strobe bit
+reg [6:0] akd_key;                       // ADB code of the last key pressed
 
 // ADB-side 1-deep staging buffer for Register 0 events. When a press
 // arrives and the host hasn't yet read the previous event
@@ -686,6 +687,11 @@ always @(*) begin
         dout_comb_reg = K;
       end
     end
+    8'h10: begin  // $C010 - Any key down, and the key's code
+      if (rw) begin
+        dout_comb_reg = {akd, K[6:0]};
+      end
+    end
     default: begin
       // Use registered dout for other addresses
       dout_comb_reg = dout;
@@ -787,6 +793,7 @@ always @(posedge CLK_14M) begin
     apple_shift <= 1'b0;
     apple_ctrl <= 1'b0;
     akd <= 1'b0;
+    akd_key <= 7'd0;
     K <= 8'd0;
     kbd_strobe <= 1'b0;
     
@@ -1020,6 +1027,11 @@ always @(posedge CLK_14M) begin
               kbd_r0_next_valid <= 1'b1;
             end
 
+            if (temp_iie_char != 8'hFF) begin
+              akd <= 1'b1;  // Any key down
+              akd_key <= temp_apple_key[6:0];
+            end
+
             // Only populate the IIe keyboard FIFO / K register for keys
             // that produce an ASCII character. Caps Lock / modifiers
             // have temp_iie_char == 0xFF and shouldn't waste FIFO slots.
@@ -1033,7 +1045,6 @@ always @(posedge CLK_14M) begin
               $display("ADB: Setting K register: PS2=%03h Apple=%02h ASCII=%02h", ps2_key[8:0], temp_apple_key, temp_iie_char);
 `endif
               K <= {1'b1, temp_iie_char[6:0]};  // Set strobe bit + 7-bit ASCII
-              akd <= 1'b1;  // Any key down
             end
           end else begin
             // Key released
@@ -1066,7 +1077,8 @@ always @(posedge CLK_14M) begin
             // Raise keyboard SRQ for raw-event consumers (autopoll off).
             if (kbd_autopoll_off) kbd_srq_pending <= 1'b1;
 
-            akd <= 1'b0;  // Clear any key down
+            // Only the last key pressed clears it, even with another held
+            if (temp_apple_key[6:0] == akd_key) akd <= 1'b0;
           end
         end
       end
@@ -2116,7 +2128,7 @@ always @(posedge CLK_14M) begin
       
       8'h10: begin  // $C010 - Keyboard strobe clear (ANY access clears strobe)
         if (rw) begin
-          dout <= K;  // Return K value on read
+          dout <= {akd, K[6:0]};  // Any key down, and the key's code
         end
         // Clear strobe on ANY access (read or write) - matches GSplus behavior
         if (cen & strobe & !c010_processed_this_strobe) begin
