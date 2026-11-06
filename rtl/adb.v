@@ -191,7 +191,9 @@ reg [7:0] repeat_delay_vbl;          // Initial delay before repeat starts
 reg [7:0] repeat_rate_vbl;           // Interval between repeats
 
 // IRQ generation
-wire data_irq = data_int & (pending_data > 0);
+// A response header is valid data even when it has no payload (KEGS
+// adb_response_packet), so the data IRQ and C027 data-valid include it.
+wire data_irq = data_int & (cmd_response_ready | (pending_data > 0));
 wire mouse_irq = mouse_int & valid_mouse_data;
 wire kbd_irq = kbd_int & kbd_strobe;
 assign irq = data_irq | mouse_irq | kbd_irq;
@@ -228,7 +230,7 @@ reg  desk_mgr_pending;
 // (so it can't storm on a stale key-press at game load like the reverted
 // device_data_pending level-signal did).
 assign kbd_srq_irq = kbd_srq_pending |
-                     (kbd_autopoll_off & data_int & (pending_data > 3'd0)) |
+                     (kbd_autopoll_off & data_irq) |
                      // Ctrl-OA-Esc Desk Manager interrupt (autopoll-on desktop):
                      // gated on data_int ($C027 DATA_INT enable) exactly like the
                      // gsplus adb_add_data_int() path. Self-clears on $C026 read.
@@ -659,7 +661,7 @@ always @(*) begin
         dout_comb_reg = {
           valid_mouse_data,                        // bit 7: mouse data valid ONLY (see $C027 reg path)
           mouse_int,                               // bit 6: mouse interrupt enable
-          (pending_data > 0) | kbd_srq_pending | desk_mgr_pending,  // bit 5: data valid (cmd response, SRQ byte, or Ctrl-OA-Esc desk-mgr)
+          cmd_response_ready | (pending_data > 0) | kbd_srq_pending | desk_mgr_pending,  // bit 5: data valid (cmd response, SRQ byte, or Ctrl-OA-Esc desk-mgr)
           data_int,                                // bit 4: data interrupt enable
           valid_kbd,                               // bit 3: keyboard data valid
           kbd_int,                                 // bit 2: keyboard interrupt enable
@@ -1476,13 +1478,9 @@ always @(posedge CLK_14M) begin
                   if (strobe & (addr == 8'h26)) c026_status_read_with_data <= 1'b1;
                 end else begin
                   dout <= 8'h80;  // Response received, no data
-                  // Clear on rising edge only
-                  if (strobe & ~strobe_prev) begin
-                    cmd_response_ready <= 1'b0;  // Clear after returning status
-`ifdef DEBUG_ADB
-                    $display("ADB C026: returning 0x80, no data");
-`endif
-                  end
+                  // Keep the header visible for the whole CPU read; it is
+                  // acknowledged on the strobe falling edge below.
+                  if (strobe & (addr == 8'h26)) c026_status_read_with_data <= 1'b1;
                 end
               end else begin
                 // No command response - return SRQ status (bit 3) when a
@@ -1720,9 +1718,17 @@ always @(posedge CLK_14M) begin
                     device_data_pending[3] <= 8'h00;
                     valid_mouse_data <= 1'b0;
                     state <= IDLE;
+                  end else if (din[3:0] == 4'd2) begin
+                    // An empty keyboard TALK still completes at the IIgs host
+                    // interface with header $80 and no payload (KEGS adb.c).
+                    // Raw ADB clients such as Doom GS wait for that completion
+                    // before issuing another TALK (multitini-one, Henri Asseily).
+                    pending_data <= 3'd0;
+                    cmd_response_ready <= 1'b1;
+                    state <= IDLE;
                   end else begin
-                    // No queued data / device not present: send NO response so the
-                    // firmware moves on to poll other devices (per gsplus).
+                    // Other empty devices and absent addresses: send NO response
+                    // so the firmware moves on to poll other devices (per gsplus).
                     state <= IDLE;
                   end
                 end
@@ -2107,7 +2113,7 @@ always @(posedge CLK_14M) begin
           dout <= {
             valid_mouse_data,      // bit 7: mouse data valid ONLY
             mouse_int,             // bit 6: mouse interrupt enable
-            (pending_data > 0) | kbd_srq_pending | desk_mgr_pending,  // bit 5: valid data (cmd response, SRQ byte, or Ctrl-OA-Esc desk-mgr)
+            cmd_response_ready | (pending_data > 0) | kbd_srq_pending | desk_mgr_pending,  // bit 5: valid data (cmd response, SRQ byte, or Ctrl-OA-Esc desk-mgr)
             data_int,              // bit 4: data interrupt enable
             valid_kbd,             // bit 3: keyboard data valid
             kbd_int,               // bit 2: keyboard interrupt enable
@@ -2277,18 +2283,13 @@ always @(posedge CLK_14M) begin
     // is robust to phi2/strobe-edge alignment (the rising-edge+cen approach
     // could miss, stranding the response). Mirrors the C024 falling-edge handler.
     if (~strobe & strobe_prev & c026_status_read_with_data) begin
-      state <= DATA;
+      // Enter DATA only when payload bytes follow the header.
+      state <= (pending_data > 3'd0) ? DATA : IDLE;
       cmd_response_ready <= 1'b0;
       c026_status_read_with_data <= 1'b0;
 `ifdef DEBUG_ADB
       $display("ADB C026 HEADER->DATA (falling): pending=%d data=%08h", pending_data, data);
 `endif
-    end
-
-    // Clear cmd_response_ready when no pending data (after status byte was read)
-    // This handles the case where there's no data to return after the status byte
-    if (~strobe & strobe_prev & cmd_response_ready & (pending_data == 3'd0) & (state == IDLE)) begin
-      cmd_response_ready <= 1'b0;
     end
 
     // Ctrl-OA-Esc desk-mgr byte (0x20): clear desk_mgr_pending on the strobe

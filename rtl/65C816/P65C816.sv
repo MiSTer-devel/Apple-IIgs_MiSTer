@@ -388,7 +388,13 @@ module P65C816
             end
 
             oldXF <= XF;
-            if (XF == 1'b1 & oldXF == 1'b0 & EF == 1'b0)
+            // Clear the index high bytes in the same cycle that PLP (LOAD_P=011)
+            // or SEP (LOAD_P=110, IR[5]) sets X, not one cycle later; the late
+            // clear could land on the next instruction's index write. From
+            // multitini-one's SingleStep-qualified CPU patch (Henri Asseily).
+            if (EF == 1'b0 && ((XF == 1'b1 && oldXF == 1'b0) ||
+                (MC.LOAD_P == 3'b011 && D_IN[4]) ||
+                (MC.LOAD_P == 3'b110 && IR[5] && DR[4])))
             begin
                X[15:8] <= 8'h00;
                Y[15:8] <= 8'h00;
@@ -443,6 +449,10 @@ module P65C816
                default :
                   ;
             endcase
+            // Long pushes/pulls keep full 16-bit SP arithmetic mid-instruction,
+            // but the architectural S is always page $01 in emulation mode.
+            // From multitini-one's SingleStep-qualified CPU patch.
+            if (EF == 1'b1 && LAST_CYCLE == 1'b1) SP[15:8] <= 8'h01;
          end
       end
 

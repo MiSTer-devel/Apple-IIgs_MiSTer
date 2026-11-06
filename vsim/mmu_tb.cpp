@@ -165,7 +165,8 @@ static Out ref_mmu(const In& s)
     o.romd_ce = (b == 0xFD) && !(FIX_ROM01_FCFD && s.rom_select);
     o.rom1_ce = (b == 0xFE);
 
-    const bool vec = !s.vpb_n && b == 0x00 &&
+    // Vector-pull ROM override only while the LC is mapped (IOLC not inhibited).
+    const bool vec = !s.vpb_n && b == 0x00 && !sh6 &&
                      (a == 0xFFEE || a == 0xFFEF || a == 0xFFFE || a == 0xFFFF);
     const bool rd_or_vec = s.RDROM || !s.vpb_n;
     const bool lc_rom_bank = (b == 0x00) || (FIX_BANK01_LC_ROM && b == 0x01);
