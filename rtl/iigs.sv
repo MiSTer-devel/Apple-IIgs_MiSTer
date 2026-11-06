@@ -3078,7 +3078,7 @@ clock_divider clk_div_inst (
     .is_rom_access(rom_ce),
     .reset(reset),
     .stretch(1'b0),  // legacy unused stretch input (superseded by ph0_*_vid below)
-    .disk_motor_hold(iwm_enbl && !DISK35[6]),  // 5.25" /ENBL (with mode-bit-2 holdover) keeps 1 MHz through spin-down
+    .disk_motor_hold(iwm_enbl),  // IWM /ENBL (with mode-bit-2 holdover) keeps 1 MHz through spin-down, 3.5" too
     .ph0_phase_vid(PH0_PHASE_VID),  // VGC/Mega II PH0 phase (Stage 1: wired, not yet consumed)
     .ph0_stb_vid(PH0_STB_VID),      // VGC/Mega II PH0 boundary strobe
     .line_stb_vid(LINE_STB_VID),    // VGC/Mega II line-boundary strobe (PH0 grid anchor)

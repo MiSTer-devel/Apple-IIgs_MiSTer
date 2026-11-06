@@ -70,10 +70,11 @@ module flux_drive (
 
     // Internal state for parent-level sense computation (Verilator eval order workaround)
     output wire        DISK_SWITCHED_OUT,    // disk_switched flag (1=normal, 0=switched)
-    output wire        STEP_BUSY_OUT,        // 1=stepping in progress
+    output wire        STEP_BUSY_OUT,        // 1=step command acknowledgement active
     output wire        STEP_DIR_OUT,         // step direction readback
     output wire        MOTOR_ON_SENSE_OUT,   // motor on for sense readback
     output wire        AT_TRACK0_OUT,        // head at track 0
+    output wire        TACH_N_OUT,           // Sony /TACH, high when stopped
 
     // Status outputs
     output wire        MOTOR_SPINNING,  // Physical motor state (includes spindown)
@@ -153,25 +154,20 @@ module flux_drive (
 
     // Motor state
     reg         motor_spinning;         // Physical motor rotation state
-    reg         prev_motor_spinning;    // For edge detection on motor state
     reg [18:0]  sony_spindown_counter;  // 3.5" spindle coast-down timer
 
-    // Drive ready state (MAME m_ready equivalent)
-    // MAME: m_ready=true means NOT ready, m_ready=false means ready (active-low)
-    // After motor turns on, drive needs ~2 rotations worth of bits to become ready.
-    // Using fixed bit count instead of rotation detection because rapid side switching
-    // can cause spurious rotation_complete signals that make spinup too short.
-    // MAME spinup is ~0.5 seconds. At 2µs/bit (28 cycles at 14MHz):
-    // 0.5 sec = 7,000,000 cycles / 28 cycles/bit = 250,000 bits
-    // FIX8: Increased from 170,000 (0.33 sec) to 250,000 (0.5 sec) to match MAME
-    //
-    // For 5.25" drives, iwm_woz.v already handles 300ms motor inertia before
-    // MOTOR_ON goes high. Real Disk II has no /READY signal — data is available
-    // as soon as the motor reaches speed. 5.25" drives skip the spinup counter.
-    parameter [17:0] SPINUP_BIT_COUNT = 18'd250000;
-    reg [17:0]  spinup_bits;            // Count bits during spin-up
-    reg         drive_ready;            // True when drive is spun up and ready
-    reg [5:0]   spinup_timer;           // 14MHz divider to approximate bit-cell timing for spinup
+    // Model the Sony speed-lock delays expected by IWMTest on a stock IIgs.
+    // A stopped spindle takes about 196 ms to lock. Restarting during the
+    // short coast takes about 84 ms. Use fixed 28-tick units so neither delay
+    // depends on the track encoding, side, or whether track data is loaded.
+    parameter [17:0] SPINUP_BIT_COUNT = 18'd100000;
+    localparam [17:0] SONY_WARM_SPINUP_BITS = 18'd43000;
+    reg         prev_sony_motor_on;
+    reg [17:0]  spinup_bits_left;
+    reg         drive_ready;
+    reg [5:0]   spinup_timer;
+    reg         sony_warm_relock;
+    wire        sony_restart_warm = (sony_spindown_counter != 19'd0) && (drive_ready || sony_warm_relock);
 
     // Head position (quarter-track)
     reg [8:0]   head_phase;             // 0-319 for 80 tracks (3.5") or 0-139 for 35 tracks (5.25")
@@ -265,7 +261,9 @@ module flux_drive (
 
     // Internal motor state for 3.5" Sony drives (controlled by commands)
     reg         sony_motor_on;
-    
+    wire        sony_selected = IS_35_INCH && SEL35 && (DRIVE_SELECT == DRIVE_SLOT);
+    reg         prev_sony_selected;
+
     // Disk change latch (MAME convention: 1=normal/acknowledged, 0=disk-was-changed)
     // Sense returns !disk_switched, so 0→sense HIGH (changed), 1→sense LOW (normal)
     reg         disk_switched;
@@ -486,7 +484,7 @@ module flux_drive (
     // This prevents the timer code (which runs later in the always block) from
     // overwriting the position reset (bit_position <= 0) with bit_position + 1.
     // Motor restart: motor_spinning 0→1 while drive_ready already true (common with 3.5" drives)
-    wire        drive_ready_rising = drive_ready && !prev_drive_ready && (TRACK_BIT_COUNT > 0);
+    wire        drive_ready_rising = drive_ready && !prev_drive_ready && !sony_warm_relock && (TRACK_BIT_COUNT > 0);
     wire        motor_restart_ready = motor_spinning && !prev_motor_for_position && drive_ready && (TRACK_BIT_COUNT > 0);
     wire        track_load_reset = TRACK_LOAD_COMPLETE && !motor_spinning;
     wire        track_load_spinning = TRACK_LOAD_COMPLETE && motor_spinning;
@@ -497,7 +495,7 @@ module flux_drive (
     //=========================================================================
 
     assign MOTOR_SPINNING = motor_spinning;
-    assign DRIVE_READY = drive_ready;           // Ready after 2 rotation spinup
+    assign DRIVE_READY = drive_ready;
     assign TRACK = head_phase[8:2];             // Quarter-track to full track
     assign HEAD_QTRACK = head_phase;            // Full quarter-track resolution head position
     assign BIT_POSITION = bit_position;
@@ -563,13 +561,53 @@ module flux_drive (
     // We latch {CA2, CA1, CA0} in LATCHED_SENSE_REG[2:0], so reorder here.
     wire [3:0] status_reg = {LATCHED_SENSE_REG[1], LATCHED_SENSE_REG[0],
                              DISKREG_SEL, LATCHED_SENSE_REG[2]};
-    wire       at_track0 = (head_phase[8:2] == 7'd0);
+    // Apple 669-0452-A: 60 pulses per revolution at 394, 429, 472,
+    // 525, and 590 RPM in the five 16-cylinder zones. Each half period
+    // is 14,318,180 / (2 * RPM) virtual native ticks, rounded to nearest.
+    // Keep spindle sense independent of head selection and track-buffer data.
+    reg [14:0] tach_half_period;
+    always @(*) begin
+        case (head_phase[8:6])
+            3'd0: tach_half_period = 15'd18170;
+            3'd1: tach_half_period = 15'd16688;
+            3'd2: tach_half_period = 15'd15168;
+            3'd3: tach_half_period = 15'd13636;
+            default: tach_half_period = 15'd12134;
+        endcase
+    end
+    reg [14:0] tach_ticks;
+    reg tach_n;
+    wire tach_running = IS_35_INCH && DISK_MOUNTED && motor_spinning;
+    always @(posedge CLK_14M or posedge RESET) begin
+        if (RESET) begin
+            tach_ticks <= 15'd0;
+            tach_n <= 1'b1;
+        end else begin
+            if (!tach_running) begin
+                tach_ticks <= 15'd0;
+                tach_n <= 1'b1;
+            end else if (tach_ticks == 15'd0) begin
+                tach_ticks <= tach_half_period - 15'd1;
+                tach_n <= ~tach_n;
+            end else begin
+                tach_ticks <= tach_ticks - 15'd1;
+            end
+        end
+    end
+    assign TACH_N_OUT = tach_running ? tach_n : 1'b1;
 
-    // Disk stepping status used by STAT35 ($04).
-    // Apple docs: step one track takes ~12ms; bit is 0 while stepping, 1 when idle.
-    localparam [17:0] STEP_BUSY_CYCLES = 18'd168000; // ~12ms at 14MHz
-    reg [17:0] step_busy_cnt;
-    wire      step_busy = (step_busy_cnt != 18'd0);
+    // Apple 3.5 Drive Service Source gives a 6 ms maximum track-to-track
+    // seek. Delay the home sensor on arrival without delaying track loading.
+    localparam [16:0] TRACK0_SETTLE_CYCLES = 17'd85909;
+    reg [16:0] track0_settle_cnt;
+    wire       at_track0 = (head_phase[8:2] == 7'd0) && (track0_settle_cnt == 17'd0);
+
+    // STAT35 ($04) acknowledges a step with a short active-low pulse.
+    // Model about 28 us for the IWMTest polling window, independently of
+    // the mechanical track-zero sensor settling time.
+    localparam [8:0] STEP_BUSY_CYCLES = 9'd400;
+    reg [8:0] step_busy_cnt;
+    wire      step_busy = (step_busy_cnt != 9'd0);
 
     // 3.5" status sensing (IIgs ROM protocol; many signals are active-low)
     // In SmartPort/C-Bus mode the ROM reads the IWM status sense bit as /BSY and
@@ -589,9 +627,8 @@ module flux_drive (
             4'h0: sense_35 = step_direction_immediate;  // Dir readback (IS35DRIVE)
             4'h1: sense_35 = step_direction_immediate;  // Dir readback (paired test)
             4'h2: sense_35 = ~DISK_MOUNTED;             // /DIP: 0=disk present, 1=no disk
-            // Apple docs: "bit is 0 while stepping, 1 when idle."
             // ROM polls with BPL (loop while sense LOW), exits when sense goes HIGH (idle).
-            4'h4: sense_35 = ~step_busy;                // /STEP: 0=stepping, 1=idle
+            4'h4: sense_35 = ~step_busy;                // /STEP: 0=acknowledging, 1=idle
             4'h8: sense_35 = ~motor_on_sense;           // /MOTOR: 0=on, 1=off
             4'hA: sense_35 = ~at_track0;                // /TK0: 0=at track0, 1=not track0
             4'hB: sense_35 = ~drive_ready;              // /READY: 0=ready, 1=not ready
@@ -603,7 +640,7 @@ module flux_drive (
             4'hC: sense_35 = ~disk_switched;  // Invert: disk_switched=1(normal)→sense LOW, =0(changed)→sense HIGH
             4'h9: sense_35 = 1'b1;                      // Default-high for unused reads
             4'hD: sense_35 = 1'b1;                      // Default-high for unused reads
-            4'hE: sense_35 = ~drive_ready;              // Treat as /READY as well (safe)
+            4'hE: sense_35 = TACH_N_OUT;                // /TACH: spindle-speed pulses
             4'hF: sense_35 = 1'b1;
             4'h3: sense_35 = 1'b1;
             4'h5: sense_35 = 1'b1;
@@ -753,20 +790,22 @@ module flux_drive (
             step_direction_slot <= 2'b00;  // Default: toward higher tracks (matches MAME m_dir=0)
             prev_lstrb <= 1'b0;            // No strobe active initially
             sony_motor_on <= 1'b0;         // Default: motor off
+            prev_sony_selected <= 1'b0;
             EJECT_REQ <= 1'b0;
             disk_switched <= 1'b1;  // Normal at reset; mount/unmount edge detection (below) handles real changes
             prev_disk_mounted <= 1'b0;
             first_mount_done <= 1'b0;
-            step_busy_cnt <= 18'd0;
+            step_busy_cnt <= 9'd0;
+            track0_settle_cnt <= 17'd0;
         end else begin
             EJECT_REQ <= 1'b0;
 
-            if (step_busy_cnt != 18'd0)
-                step_busy_cnt <= step_busy_cnt - 18'd1;
+            if (step_busy_cnt != 9'd0)
+                step_busy_cnt <= step_busy_cnt - 9'd1;
+            if (track0_settle_cnt != 17'd0)
+                track0_settle_cnt <= track0_settle_cnt - 17'd1;
 
-            // NOTE: The ROM routinely clears $C031 (including 35SEL) at command boundaries.
-            // Do not forcibly clear the Sony motor command immediately when SEL35 deasserts,
-            // or we can lose the spindle state across brief deselect windows and fail boot.
+            prev_sony_selected <= sony_selected;
 
             // Track disk removal/insertion for disk-change latch
             // MAME convention: disk_switched=1 is normal, =0 means "disk was changed"
@@ -852,16 +891,19 @@ module flux_drive (
                         // Ignore SEL35 deassertions; the ROM clears $C031 between commands.
                         if (DISK_MOUNTED) begin
                             if (step_direction_slot[DRIVE_SELECT] == 1'b0) begin
-                                if ({1'b0, head_phase} < max_phase)
+                                if ({1'b0, head_phase} + 10'd4 <= max_phase)
                                     head_phase <= head_phase + 9'd4;
                             end else begin
-                                if (head_phase >= 9'd4)
+                                if (head_phase >= 9'd4) begin
                                     head_phase <= head_phase - 9'd4;
-                                else
+                                    if (head_phase == 9'd4)
+                                        track0_settle_cnt <= TRACK0_SETTLE_CYCLES;
+                                end else begin
                                     head_phase <= 9'd0;
+                                end
                             end
                         end
-                        // Indicate head is stepping; ROM polls STAT35 $04 until it returns high.
+                        // Acknowledge the step command, including at an end stop.
                         step_busy_cnt <= STEP_BUSY_CYCLES;
 `ifdef DEBUG_VERBOSE
                         $display("FLUX_DRIVE[%0d]: cmd STEP (dir=%0d head_phase=%0d)", DRIVE_ID, step_direction_slot[DRIVE_SELECT], head_phase);
@@ -939,6 +981,11 @@ module flux_drive (
                 end
             end
             prev_lstrb <= lstrb;
+
+            // Redirecting an enabled drive clears the previous Sony motor command.
+            // A plain IWM disable preserves it across ROM command boundaries.
+            if (SW_MOTOR_ON && prev_sony_selected && !sony_selected)
+                sony_motor_on <= 1'b0;
 
             if (motor_spinning) begin  // Only step when motor is on
             // NOTE: 3.5" Sony drives use command-based stepping (cmd 1 = step on)
@@ -1073,21 +1120,20 @@ module flux_drive (
     //=========================================================================
     // Motor State Machine
     //=========================================================================
-    // The spindown is handled by iwm_woz.v, which passes the already-delayed
-    // motor_spinning signal as MOTOR_ON to this module. We just follow it directly.
-    // This ensures MOTOR_ACTIVE (from iwm_woz) and MOTOR_SPINNING (from here)
-    // stay synchronized for proper data register reads in iwm_flux.
+    // iwm_woz handles Disk II inertia. Sony spindle coast and ready timing
+    // follow the Sony motor command, independently of IWM enable and SEL35.
 
     always @(posedge CLK_14M or posedge RESET) begin
         if (RESET) begin
             motor_spinning <= 1'b0;
-            prev_motor_spinning <= 1'b0;
             sony_spindown_counter <= 19'd0;
-            spinup_bits <= 18'd0;
+            prev_sony_motor_on <= 1'b0;
+            spinup_bits_left <= 18'd0;
             drive_ready <= 1'b0;
             spinup_timer <= BIT_CELL_35;
+            sony_warm_relock <= 1'b0;
         end else begin
-            prev_motor_spinning <= motor_spinning;
+            prev_sony_motor_on <= sony_motor_on;
 
             if (IS_35_INCH) begin
                 // 3.5" Sony drives: motor_spinning controls flux generation
@@ -1121,58 +1167,35 @@ module flux_drive (
                 motor_spinning <= MOTOR_ON;
             end
 
-            // Drive ready logic - bit-count based spinup
-            // Using fixed bit count (SPINUP_BIT_COUNT = ~2 rotations) instead of
-            // rotation detection because rapid side switching during ROM drive
-            // detection causes spurious rotation_complete signals.
-            if (!prev_motor_spinning && motor_spinning && DISK_MOUNTED) begin
-                // Motor just turned ON with disk mounted - start spin-up
-                if (IS_35_INCH) begin
-                    // 3.5" Sony drives: need spinup counter (~0.5s) for drive_ready
-                    spinup_bits <= 18'd0;
-                    drive_ready <= 1'b0;
-                    spinup_timer <= bit_cell_cycles;
-`ifdef DEBUG_VERBOSE
-                    $display("FLUX_DRIVE[%0d]: Motor ON - starting spin-up (need %0d bits)", DRIVE_ID, SPINUP_BIT_COUNT);
-`endif
-                end else begin
-                    // 5.25" Disk II: no /READY signal in hardware. iwm_woz.v already
-                    // simulates 300ms motor inertia before MOTOR_ON goes high, so the
-                    // drive is at speed. Set drive_ready immediately.
-                    drive_ready <= 1'b1;
-                    spinup_bits <= SPINUP_BIT_COUNT;
-`ifdef DEBUG_VERBOSE
-                    $display("FLUX_DRIVE[%0d]: Motor ON - 5.25\" drive ready immediately (300ms inertia in iwm_woz)", DRIVE_ID);
-`endif
-                end
-            end else if (!motor_spinning) begin
-                // Physical spindle stopped: clear ready state for both drive types.
+            if (!IS_35_INCH) begin
+                // Disk II has no /READY line. MOTOR_ON already includes inertia.
+                drive_ready <= motor_spinning && DISK_MOUNTED;
+            end else if (!DISK_MOUNTED || (!sony_motor_on && !motor_spinning)) begin
                 drive_ready <= 1'b0;
-                spinup_bits <= 18'd0;
-                spinup_timer <= bit_cell_cycles;
-            end
-
-            // Spin-up timing should not depend on track data being loaded: /READY is a physical-drive
-            // signal that the ROM polls before/while track data is being streamed.
-            if (motor_spinning && !drive_ready && DISK_MOUNTED) begin
-                if (spinup_timer == 6'd1) begin
-                    spinup_timer <= bit_cell_cycles;
-                    if (spinup_bits < SPINUP_BIT_COUNT) begin
-                        spinup_bits <= spinup_bits + 1'd1;
-                        if (spinup_bits + 1 >= SPINUP_BIT_COUNT) begin
+                spinup_bits_left <= 18'd0;
+                sony_warm_relock <= 1'b0;
+            end else if (sony_motor_on) begin
+                if (!prev_sony_motor_on || !motor_spinning) begin
+                    // Reacquire speed lock on a new command, even if the
+                    // spindle is still rotating at speed during coast.
+                    sony_warm_relock <= sony_restart_warm;
+                    spinup_bits_left <= sony_restart_warm ? SONY_WARM_SPINUP_BITS : SPINUP_BIT_COUNT;
+                    spinup_timer <= BIT_CELL_35;
+                    drive_ready <= 1'b0;
+                end else if (!drive_ready) begin
+                    if (spinup_timer == 6'd1) begin
+                        spinup_timer <= BIT_CELL_35;
+                        if (spinup_bits_left <= 18'd1) begin
                             drive_ready <= 1'b1;
-`ifdef DEBUG_VERBOSE
-                            $display("FLUX_DRIVE[%0d]: Drive ready after %0d bits spinup (needed %0d)",
-                                     DRIVE_ID, spinup_bits + 1, SPINUP_BIT_COUNT);
-`endif
+                        end else begin
+                            spinup_bits_left <= spinup_bits_left - 18'd1;
                         end
+                    end else begin
+                        spinup_timer <= spinup_timer - 6'd1;
                     end
-                end else begin
-                    spinup_timer <= spinup_timer - 1'd1;
                 end
-            end else begin
-                spinup_timer <= bit_cell_cycles;
             end
+            // If already locked, keep data available during spindle coast.
         end
     end
 
@@ -1324,7 +1347,8 @@ module flux_drive (
 `endif
             end
 
-            // Reset bit_position when drive becomes ready (after spinup completes)
+            // Reset bit_position after cold spinup. Warm speed relock keeps
+            // the angular position of the spindle that continued rotating.
             // This ensures the decoder starts at a known position when the state machine activates.
             // Without this reset, bit_position accumulates during spinup (~170000 bits) and the
             // decoder starts mid-track, never seeing the D5 AA prologue markers at the track start.
@@ -1337,7 +1361,7 @@ module flux_drive (
             // When motor_spinning restarts (0→1) while drive_ready is ALREADY true (common with
             // 3.5" drives during GS/OS loading due to SEL35 toggling), we need to wait for
             // fresh BRAM data. The first flux check after restart would otherwise use stale data.
-            if (drive_ready && !prev_drive_ready && TRACK_BIT_COUNT > 0) begin
+            if (drive_ready_rising) begin
                 bit_position <= 17'd0;
                 bit_timer <= bit_cell_base;  // Full bit cell time
                 bit_half_timer <= bit_half_base;
