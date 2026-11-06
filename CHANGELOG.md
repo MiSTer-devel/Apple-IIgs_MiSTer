@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Floppy (IWM / Sony 3.5")
+- IWMTest v1.0 passes all 67 checks, in the sim (ROM 3) and on a DE10-Nano (ROM 01). The IWM and Sony drive corrections come from [Henri Asseily](https://github.com/hasseily)'s multitini-one port of this core:
+  - the ~1 s motor-off delay;
+  - drive-present, write-protect and tachometer status;
+  - the step acknowledge and track-0 settle;
+  - spin-up timing;
+  - Sony async write under-run.
+- After an eject, the drive status now comes from the empty 3.5" drive instead of falling back to the 5.25" drive, so software sees "no disk" and "disk switched".
+- The CPU stays at 1 MHz through the motor-off delay for 3.5" drives too, as on hardware.
+- A System 6.0.2 hard-disk install with OSD disk swaps runs to the end and the disk boots (#8).
+
+### Memory
+- The `$C000`-`$C00F` soft switches also respond to writes through bank E1. Crystal Quest's playfield and Out of This World's wide film modes now display.
+- IRQ/BRK vectors come from RAM when the language card is switched out (Doom GS). From multitini-one.
+
+### CPU (65C816)
+- When `PLP`/`SEP` set the X flag, the index high bytes clear in the same cycle.
+- In emulation mode the stack page is kept at $01 at the end of each instruction. Both are from multitini-one.
+
+### Keyboard (ADB)
+- An empty keyboard poll completes with a $80 header, as in KEGS, which Doom GS waits for. From multitini-one.
+
+### Settings
+- Saved OSD settings (CPU speed, serial port, accelerator, ...) are no longer wiped when the core loads. Use OSD → System → Save settings.
+
+### Testing
+- `regression.sh` 10/10, `mmu_tb`, and MMUPROBE against the physical ROM 01 and ROM 03 captures (0 differences).
+
 ## 2026-11-05 (`releases/Apple-IIgs_20261105.rbf`)
 
 ### CPU (65C816)
