@@ -305,8 +305,12 @@ module iigs
   logic [7:0]         bank_bef;
   logic [15:0]        addr_bef;
   // Banks in which $C000-$C00F writes change the IIe soft switches. IO already
-  // limits the banks that reach I/O; E1 is excluded pending a hardware result.
-  wire                iie_switch_bank = (bank_bef != 8'he1);
+  // limits the banks that reach I/O, and every one of them qualifies, E1
+  // included: Crystal Quest turns on RAMRD/RAMWRT with STA $E1C003/$E1C005
+  // before drawing its playfield through a direct page in bank 00 (redirected
+  // to bank 01 and shadowed to E1). Excluding E1 left the playfield in bank 00,
+  // so only the status bar showed. KEGS also accepts these writes in E1.
+  wire                iie_switch_bank = 1'b1;
 
   logic [23:0]        cpu_addr;
   logic [7:0]         cpu_dout;
@@ -939,8 +943,8 @@ module iigs
             // Apple II compatibility soft switches ($C000-$C00F).
             // Physical ROM 01/03 MMUPROBE captures: a write to $C005 through bank 01
             // (either CYAREG[4]) or through banks 02-7F with CYAREG[4]=1 sets RAMWRT,
-            // so these respond in every bank where IO is decoded. Bank E1 stays
-            // excluded only because it is unmeasured (see iie_switch_bank).
+            // so these respond in every bank where IO is decoded, E1 included
+            // (Crystal Quest; see iie_switch_bank).
 `ifdef DEBUG_IO
             12'h000: begin if (iie_switch_bank) begin $display("**STORE80 %x",0); STORE80<= 1'b0 ; end end
             12'h001: begin if (iie_switch_bank) begin $display("**STORE80 %x",1); STORE80<= 1'b1 ; end end
