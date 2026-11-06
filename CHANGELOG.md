@@ -17,6 +17,9 @@
 ### TransWarp GS
 - The TransWarp GS CDA now installs at boot and opens from the Desk Accessories menu on ROM 01 and ROM 3 (#1).
 
+### Sound (ES5503 DOC)
+- The Oscillator Interrupt Register (`$E0`) reports each interrupting oscillator once, oldest first. Before, with several oscillators interrupting, it showed the same oscillator repeatedly and the others were cleared without being reported. The order and the value after the last one were measured on a ROM 03 IIgs. Thanks to [slaapliedje](https://github.com/slaapliedje) (PR #14).
+
 ### Serial (SCC)
 - The decoded register resets are synchronous, so the ROM self-test passes test 06.
 
@@ -25,9 +28,9 @@
 
 ### Testing
 - vsim's `regression.sh` passes 10/10. With the TransWarp GS card on, the CDA is listed on ROM 01 and ROM 3.
-- FPGA build: Quartus 17.0, worst setup slack +0.410 ns, worst hold slack +0.206 ns.
+- FPGA build: Quartus 17.0, worst setup slack +0.273 ns, worst hold slack +0.252 ns.
 - Hardware (DE10-Nano):
-  - GS/OS 6.0.1 with TransWarp GS on ROM 01 and ROM 3: the CDA is listed and opens.
+  - GS/OS 6.0.1 with TransWarp GS on ROM 01 and ROM 3: the CDA is listed and opens, and its Quick Self-Test passes all nine tests.
   - The Prince of Persia Double Hi-Res preview has no left-edge strip, and the Delta Demo has no brown band. The IIgs Diagnostic lo-res pages are no longer clipped on the left.
   - On earlier test builds with the same SCC and ADB changes: the ROM self-test passes on ROM 01, including test 06 (SCC), and holding keys works in Prince of Persia.
 
