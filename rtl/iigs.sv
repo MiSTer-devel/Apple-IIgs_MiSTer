@@ -2762,25 +2762,22 @@ always @(posedge CLK_14M) begin
     twgs_boot_armed <= 1'b0;
 end
 
-// Phase 2 (WIP): CDA auto-install. STATUS: the NMI fires at the right moment
-// (2.5 s after the genuine handoff -- the countdown pauses while execution is
-// in bank $BC, so the firmware's own early $00FFFC read can't mistime it),
-// the tight vector overlay serves LFB24, and the LFA2F trampoline executes
-// fully (stack shuffle, hw-ack reads, RTI) -- but the RTI resumes the
-// INTERRUPTED code instead of detouring to LFA5D/_InstallCDA: the firmware's
-// stack-relative rewrite offsets assume the real 65C816's native interrupt
-// frame after PHB/PHA/PHA, and on this core the detour address lands off the
-// frame. Benign as-is (machine resumes correctly; no CDA in the menu).
-// NEXT: byte-compare our native-NMI stack frame + stack-relative addressing
-// against real-chip semantics through the LFA2F sequence (twgs.3.s:1954).
-// The firmware's chain-to-IIgs-ROM sequence
+// Phase 2: CDA auto-install. The firmware's chain-to-IIgs-ROM sequence
 // (LFB07) data-reads the real reset vector at $00FFFC from bank-$BC code --
-// a unique bus signature marking "boot handoff now". Arm a ~2.5 s deferral
-// there (Desk Manager is up well within that, ROM or GS/OS path alike),
-// then pulse NMI once. The card ROM's native NMI vector (overlaid tightly
-// by nmi_armed above) trampolines through LFA2F/LFA5D, which _InstallCDA's
-// the "TransWarp GS" desk accessory and resumes the interrupted code.
-// One-shot per reset, exactly like the real card's boot-time install.
+// a unique bus signature marking "boot handoff now". From there:
+//   1. wait ~2.5 s (counting only outside bank $BC), so the IIgs ROM has
+//      boot-initialised the toolbox (the first dispatch at boot is
+//      TLBootInit, before the Desk Manager is ready);
+//   2. wait for the next toolbox dispatch and pulse NMI on its PLY, so the
+//      NMI is taken right before the dispatcher's RTL (see twgs_disp_ply);
+//   3. the card ROM's native NMI vector (overlaid tightly by nmi_armed)
+//      runs LFA2F, which plants BC:FA5D-1 under the RTL; LFA5D then
+//      _InstallCDA's the "TransWarp GS" desk accessory and enters the tool.
+// One-shot per reset, like the real card's boot-time install. The earlier
+// version pulsed NMI straight from the timer; that interrupted arbitrary
+// code (a ROM wait loop that returns with RTS), so the planted RTL address
+// was popped by an RTS and ROM 01 crashed to the monitor. Our CPU's NMI
+// frame and RTI were correct all along.
 localparam TWGS_NMI_DELAY = 26'd35_795_453;   // 2.5 s at 14.318 MHz
 localparam TWGS_NMI_RETRY = 26'd34_363_636;   // retry 0.1 s after a miss
 reg  [1:0]  twgs_nmi_state;   // 0 idle, 1 timing, 2 vector window, 3 done
@@ -2788,6 +2785,22 @@ reg  [25:0] twgs_nmi_cnt;
 reg  [6:0]  twgs_nmi_pulse;   // NMI_N low while nonzero
 reg  [3:0]  twgs_nmi_tries;
 reg  [15:0] twgs_nmi_win;     // vector-window timeout
+reg         twgs_nmi_wait;    // delay expired: waiting for the dispatcher PLY fetch
+// The firmware's LFA2F trampoline does not redirect the RTI. It moves the
+// native interrupt frame down 3 bytes and leaves an RTL address (BC:FA5D-1)
+// on top of the INTERRUPTED code's stack. The detour therefore happens only
+// if the interrupted code's next stack pop is an RTL at its entry stack
+// level. LFA5D then saves A/X/Y/B/P, calls _InstallCDA, restores them and
+// RTLs to the address that was on top of the stack.
+// The toolbox dispatcher ends with  PLX / PLD / PLA / PLY / RTL ("go to
+// function"), so an NMI taken between that PLY and RTL lands in LFA5D,
+// installs the CDA, and then enters the tool with its registers and stack
+// parameters intact. A 16-bit PLY takes 5 cycles, and the core takes an NMI
+// two cycles after the edge, so firing on the PLY opcode fetch hits that
+// boundary. Same bytes in both ROMs: PLY at FE:0124 (ROM 3), FE:011A (ROM 01).
+wire [15:0] twgs_disp_ply = rom_select ? 16'h011A : 16'h0124;
+wire        twgs_disp_hit = cpu_vpa && cpu_vda && phi2 &&
+                            bank_bef == 8'hFE && addr_bef == twgs_disp_ply;
 // Fetch-bank tracker: the chain signature must be a $00FFFC DATA read issued
 // by code EXECUTING in bank $BC (the firmware's LFB07 handoff) -- the CPU's
 // own vector pulls and the IIgs ROM's reads of the reset vector must not arm.
@@ -2818,6 +2831,7 @@ always @(posedge CLK_14M) begin
     twgs_nmi_pulse <= 7'd0;
     twgs_nmi_tries <= 4'd0;
     twgs_nmi_win   <= 16'd0;
+    twgs_nmi_wait  <= 1'b0;
   end else begin
     if (twgs_nmi_pulse != 7'd0) twgs_nmi_pulse <= twgs_nmi_pulse - 7'd1;
     case (twgs_nmi_state)
@@ -2825,29 +2839,26 @@ always @(posedge CLK_14M) begin
               twgs_nmi_state <= 2'd1;
               twgs_nmi_cnt   <= 26'd0;
               twgs_nmi_tries <= 4'd0;
+              twgs_nmi_wait  <= 1'b0;
             end
       2'd1: begin
-`ifndef TWGS_CDA_INSTALL
-              // DISABLED pending the stack-frame fix:
-              // first hardware exposure showed the trampoline's mis-landing RTI is
-              // NOT benign outside the ROM3 sim case -- ROM1 boots crashed to the
-              // monitor (double BRK, X=$00BC). Hold in state 1 without counting;
-              // define TWGS_CDA_INSTALL to resume the phase-2 work.
-              twgs_nmi_cnt <= 26'd0;
-`else
               // Count only while execution is OUTSIDE bank $BC: the firmware
               // has an early $00FFFC sanity read too, but it keeps executing
               // in $BC afterwards -- the countdown holds until the real
               // handoff (after which the firmware never runs again), so the
               // NMI lands 2.5 s into the IIgs ROM's own boot.
-              if (twgs_last_pbr != 8'hBC)
-                twgs_nmi_cnt <= twgs_nmi_cnt + 26'd1;
-              if (twgs_nmi_cnt == TWGS_NMI_DELAY) begin
+              if (!twgs_nmi_wait) begin
+                if (twgs_last_pbr != 8'hBC)
+                  twgs_nmi_cnt <= twgs_nmi_cnt + 26'd1;
+                if (twgs_nmi_cnt == TWGS_NMI_DELAY)
+                  twgs_nmi_wait <= 1'b1;
+              end else if (twgs_disp_hit) begin
+                // Fire on the dispatcher's PLY so the NMI is taken right
+                // before its RTL (see twgs_disp_ply above).
                 twgs_nmi_state <= 2'd2;
                 twgs_nmi_pulse <= 7'd127;   // ~9 us low: clean edge
                 twgs_nmi_win   <= 16'd0;
               end
-`endif
             end
       2'd2: begin
               // Vector window: wait for the trampoline's JMPL to land in bank

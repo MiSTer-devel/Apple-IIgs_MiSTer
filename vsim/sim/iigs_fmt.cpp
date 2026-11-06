@@ -181,9 +181,15 @@ int woz_disk_type(const uint8_t *buf, size_t size)
 // ===========================================================================
 // 140K sector order (DOS 3.3 <-> ProDOS)
 // ===========================================================================
-// DOS logical sector -> ProDOS sector position within a track. Inverse pair.
-static const int DOS_TO_PRODOS[16] = { 0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15 };
-static const int PRODOS_TO_DOS[16] = { 0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15 };
+// DOS 3.3 logical sector <-> ProDOS sector position within a track. DOS
+// logical d sits at physical {0,13,11,9,7,5,3,1,14,12,10,8,6,4,2,15}[d];
+// ProDOS position p sits at physical {0,2,4,...,14,1,3,...,15}[p]. Composing
+// the two gives d <-> 15-d for d=1..14 (0 and 15 fixed). That map is its own
+// inverse, so both directions use the same table. The old tables were
+// physical-interleave tables, and a .po 5.25" image booted to a BRK in the
+// boot block.
+static const int DOS_TO_PRODOS[16] = { 0, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 15 };
+static const int PRODOS_TO_DOS[16] = { 0, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 15 };
 
 static void reorder_140k(uint8_t *dst, const uint8_t *src, const int map[16])
 {

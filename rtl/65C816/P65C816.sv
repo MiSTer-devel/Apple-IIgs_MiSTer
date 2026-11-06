@@ -739,7 +739,7 @@ module P65C816
             OLD_NMI_N <= NMI_N;
             if (NMI_N == 1'b0 & OLD_NMI_N == 1'b1 & NMI_SYNC == 1'b0)
                NMI_SYNC <= 1'b1;
-            else if (LAST_CYCLE == 1'b1 && NMI_SYNC == 1'b1 && EN == 1'b1)
+            else if (LAST_CYCLE == 1'b1 && NMI_ACTIVE == 1'b1 && EN == 1'b1 && GotInterrupt == 1'b0)
                NMI_SYNC <= 1'b0;
          end
       end
@@ -825,7 +825,7 @@ module P65C816
 
          if (RDY_IN == 1'b1 & CE == 1'b1)
          begin
-            if ((NMI_SYNC == 1'b1 | IRQ_N == 1'b1 | ABORT_N == 1'b0) & WAIExec == 1'b1)
+            if ((NMI_SYNC == 1'b1 | IRQ_N == 1'b0 | ABORT_N == 1'b0) & WAIExec == 1'b1)
                WAIExec <= 1'b0;
          end
       end

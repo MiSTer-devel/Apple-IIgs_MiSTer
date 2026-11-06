@@ -4236,7 +4236,8 @@ std::string disk_image2 = "";  // HDD unit 1 (--disk2)
 std::string woz_image = "";  // WOZ disk image (flux-based)
 int woz_mount_index = -1;     // Auto-detected: 4=5.25", 5=3.5"
 int woz_mount_frame = -1;     // --woz-mount-frame: insert the WOZ disk at this frame (models mounting while the ROM is booting)
-// --woz-swap <frame>:<file>: mount another floppy at a frame (models an OSD disk swap)
+// --woz-swap <frame>:<file>: mount another floppy at a frame (models an OSD disk swap).
+// <file> = eject35 / eject525 ejects that drive instead (OSD Backspace unmount).
 struct WozSwap { int frame; std::string path; int index; bool done; };
 std::vector<WozSwap> woz_swaps;
 
@@ -5104,9 +5105,15 @@ int main(int argc, char** argv, char** env) {
             }
             WozSwap s;
             s.frame = std::stoi(arg.substr(0, colon_pos));
-            s.path = prepareFloppyImage(arg.substr(colon_pos + 1));
-            s.index = detectWozType(s.path.c_str());
-            if (s.index < 0) s.index = 5;
+            std::string f = arg.substr(colon_pos + 1);
+            if (f == "eject35" || f == "eject525") {
+                s.path = "";
+                s.index = (f == "eject35") ? 5 : 4;
+            } else {
+                s.path = prepareFloppyImage(f);
+                s.index = detectWozType(s.path.c_str());
+                if (s.index < 0) s.index = 5;
+            }
             s.done = false;
             woz_swaps.push_back(s);
             printf("Will mount %s to index %d at frame %d\n", s.path.c_str(), s.index, s.frame);
@@ -5504,8 +5511,13 @@ int main(int argc, char** argv, char** env) {
                }
                for (auto& s : woz_swaps) {
                    if (!s.done && video.count_frame >= s.frame) {
-                       printf("Swapping WOZ image at frame %d: %s to index %d\n", video.count_frame, s.path.c_str(), s.index);
-                       blockdevice.MountDisk(s.path.c_str(), s.index);
+                       if (s.path.empty()) {
+                           printf("Ejecting WOZ index %d at frame %d\n", s.index, video.count_frame);
+                           blockdevice.EjectDisk(s.index);
+                       } else {
+                           printf("Swapping WOZ image at frame %d: %s to index %d\n", video.count_frame, s.path.c_str(), s.index);
+                           blockdevice.MountDisk(s.path.c_str(), s.index);
+                       }
                        s.done = true;
                    }
                }

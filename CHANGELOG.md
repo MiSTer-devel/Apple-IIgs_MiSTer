@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-11-05 (`releases/Apple-IIgs_20261105.rbf`)
+
+### CPU (65C816)
+- `WAI` now waits until IRQ is asserted (low). Before, it woke at once when no IRQ was pending, and stayed stopped when one was pending with I set. Thanks to [slaapliedje](https://github.com/slaapliedje) (PR #12).
+- NMI edges are no longer lost. The edge is held until the NMI is actually taken, instead of being cleared at the end of whatever instruction was running. Thanks to [slaapliedje](https://github.com/slaapliedje) (PR #12), based on djjohnson13p's fork.
+
+### Keyboard (ADB)
+- `$C010` bit 7 is now any-key-down, so held keys work in games such as Prince of Persia (#3). It follows the ADB microcontroller firmware: on ROM 3 it clears when the most recently pressed key is released, and on ROM 01 when no key is held. Thanks to [slaapliedje](https://github.com/slaapliedje) for the same fix in PR #13 and the ROM 03 hardware check.
+
+### Video (VGC)
+- Double Hi-Res no longer shows the previous line's last pixels at the left edge (#4).
+- Super Hi-Res fill mode starts each line from the colour the hardware uses, which removes the brown band in the Delta Demo (#7).
+- Lo-res and text are no longer clipped at the edges.
+
+### TransWarp GS
+- The TransWarp GS CDA now installs at boot and opens from the Desk Accessories menu on ROM 01 and ROM 3 (#1).
+
+### Sound (ES5503 DOC)
+- The Oscillator Interrupt Register (`$E0`) reports each interrupting oscillator once, oldest first. Before, with several oscillators interrupting, it showed the same oscillator repeatedly and the others were cleared without being reported. The order and the value after the last one were measured on a ROM 03 IIgs. Thanks to [slaapliedje](https://github.com/slaapliedje) (PR #14).
+
+### Serial (SCC)
+- The decoded register resets are synchronous, so the ROM self-test passes test 06.
+
+### Settings
+- 50 Hz needs no OSD option: set Control Panel → Display → Hertz and save NVRAM. See the README (#2).
+
+### Testing
+- vsim's `regression.sh` passes 10/10. With the TransWarp GS card on, the CDA is listed on ROM 01 and ROM 3.
+- FPGA build: Quartus 17.0, worst setup slack +0.273 ns, worst hold slack +0.252 ns.
+- Hardware (DE10-Nano):
+  - GS/OS 6.0.1 with TransWarp GS on ROM 01 and ROM 3: the CDA is listed and opens, and its Quick Self-Test passes all nine tests.
+  - The Prince of Persia Double Hi-Res preview has no left-edge strip, and the Delta Demo has no brown band. The IIgs Diagnostic lo-res pages are no longer clipped on the left.
+  - On earlier test builds with the same SCC and ADB changes: the ROM self-test passes on ROM 01, including test 06 (SCC), and holding keys works in Prince of Persia.
+
+### Known issues
+- Hi-Res and colour Double Hi-Res are still 4 pixels right of text (#4).
+- The Delta Demo's music still degrades over a long run (#7).
+- The TransWarp GS CDA is not installed if no startup disk boots (#1).
+
 ## 2026-11-04 (`releases/Apple-IIgs_20261104.rbf`)
 
 ### Memory (MMU)

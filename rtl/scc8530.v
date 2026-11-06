@@ -616,7 +616,7 @@ module scc
 	/* WR10
 	 * Reset: all 0, except chanel reset retains 6 and 5
 	 */
-	always@(posedge clk or posedge reset) begin
+	always@(posedge clk) begin  // sync reset: reset/reset_a/b are decoded from bus signals and can glitch
 		if (reset)
 		  wr10_a <= 0;
 		else if(cen) begin
@@ -626,7 +626,7 @@ module scc
 			  wr10_a <= wdata;
 		end		
 	end
-	always@(posedge clk or posedge reset) begin
+	always@(posedge clk) begin  // sync reset: reset/reset_a/b are decoded from bus signals and can glitch
 		if (reset)
 		  wr10_b <= 0;
 		else if(cen) begin
@@ -706,7 +706,7 @@ module scc
 	end
 
 	/* WR15 */
-	always@(posedge clk or posedge reset) begin
+	always@(posedge clk) begin  // sync reset: reset/reset_a/b are decoded from bus signals and can glitch
 		if (reset) begin
 		  wr15_a <= 8'b11111000;
 		  wr15_b <= 8'b11111000;
@@ -1092,7 +1092,7 @@ end
 	assign do_latch_b = latch_open_b & (dcd_ip_b | cts_ip_b);
 
 	/* "Master" interrupt, set when latch close & WR1[0] is set */
-	always@(posedge clk or posedge reset) begin
+	always@(posedge clk) begin  // sync reset: reset/reset_a/b are decoded from bus signals and can glitch
 		if (reset)
 		  ex_irq_ip_a <= 0;
 		else if(cep) begin
@@ -1102,7 +1102,7 @@ end
 			  ex_irq_ip_a <= 1;
 		end
 	end
-	always@(posedge clk or posedge reset) begin
+	always@(posedge clk) begin  // sync reset: reset/reset_a/b are decoded from bus signals and can glitch
 		if (reset)
 		  ex_irq_ip_b <= 0;
 		else if(cep) begin
@@ -1193,7 +1193,7 @@ end
 	end
 
 	/* Latch open/close control */
-	always@(posedge clk or posedge reset) begin
+	always@(posedge clk) begin  // sync reset: reset/reset_a/b are decoded from bus signals and can glitch
 		if (reset)
 		  latch_open_a <= 1;
 		else if(cep) begin
@@ -1203,7 +1203,7 @@ end
 			  latch_open_a <= 0;
 		end
 	end
-	always@(posedge clk or posedge reset) begin
+	always@(posedge clk) begin  // sync reset: reset/reset_a/b are decoded from bus signals and can glitch
 		if (reset)
 		  latch_open_b <= 1;
 		else if(cep) begin
@@ -1215,7 +1215,7 @@ end
 	end
 
 	/* Latches proper */
-	always@(posedge clk or posedge reset or posedge reset_a) begin
+	always@(posedge clk) begin  // sync reset: reset/reset_a/b are decoded from bus signals and can glitch
 		if (reset || reset_a) begin
 			// Initialize latches to match actual signal values
 			dcd_latch_a <= 1;
@@ -1227,7 +1227,7 @@ end
 			end
 		end
 	end
-	always@(posedge clk or posedge reset or posedge reset_b) begin
+	always@(posedge clk) begin  // sync reset: reset/reset_a/b are decoded from bus signals and can glitch
 		if (reset || reset_b) begin
 			// Initialize latch to match actual signal value
 			dcd_latch_b <= 1;
@@ -1246,7 +1246,7 @@ end
 	 * WR0 command: bits 7:6 = 11 → "Reset Tx Underrun/EOM Latch" → clear to 0
 	 */
 	// Channel A EOM latch
-	always@(posedge clk or posedge reset) begin
+	always@(posedge clk) begin  // sync reset: reset/reset_a/b are decoded from bus signals and can glitch
 		if (reset) begin
 			eom_latch_a <= 1'b0;  // Reset: EOM cleared (Z85C30 spec default)
 		end else if (reset_a) begin
@@ -1262,7 +1262,7 @@ end
 	end
 
 	// Channel B EOM latch
-	always@(posedge clk or posedge reset) begin
+	always@(posedge clk) begin  // sync reset: reset/reset_a/b are decoded from bus signals and can glitch
 		if (reset) begin
 			eom_latch_b <= 1'b0;  // Reset: EOM cleared (Z85C30 spec default)
 		end else if (reset_b) begin
@@ -1283,7 +1283,7 @@ end
 	 * Set when transmission completes (tx_busy goes from 1 to 0)
 	 */
 	// Channel A TX_EMPTY latch
-	always@(posedge clk or posedge reset) begin
+	always@(posedge clk) begin  // sync reset: reset/reset_a/b are decoded from bus signals and can glitch
 		if (reset) begin
 			tx_empty_latch_a <= 1'b1;  // Reset: transmitter is empty
 `ifdef DEBUG_SCC
@@ -1322,7 +1322,7 @@ end
 
 	// Channel B TX_EMPTY latch
 // Track TX busy and maintain TX empty latch for channel B
-always@(posedge clk or posedge reset) begin
+always@(posedge clk) begin  // sync reset: reset/reset_a/b are decoded from bus signals and can glitch
         if (reset) begin
                 tx_empty_latch_b <= 1'b1;  // Reset: transmitter is empty
         end else if (reset_b) begin
