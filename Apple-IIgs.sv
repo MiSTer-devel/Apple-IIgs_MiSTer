@@ -48,7 +48,8 @@ assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 // on-change signal records stream to HPS DDR3 at 0x30000000; read via
 // /dev/mem over SSH, decode offline with trace2vcd.py.
 `else
-assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;
+// DDRAM carries the Uthernet II card's W5100 memory window (rtl/uthernet2.sv).
+assign DDRAM_CLK = clk_sys;
 `endif
 
 assign VGA_SL = 0;
@@ -107,6 +108,9 @@ localparam CONF_STR = {
 	"P2SC4,RAM,PRAM NVRAM;",
 	"P2R[21],Save NVRAM;",
 	"P2R[22],Load NVRAM;",
+	"P2-;",
+	"P2O[28:27],Uthernet II,Off,Slot 3,Slot 4;",
+	"P2O[30:29],Network,eth0,macvlan,tap0,eth1;",
 	"-;",
 
 	"R0,Warm Reset;",
@@ -261,6 +265,32 @@ wire rom_select = ~status[11];  // iigs.sv: 0=ROM3, 1=ROM1 (status=0 default -> 
 // always built in; it was hardware-validated at 7.16 MHz (2-FF mem_ack
 // synchronizer fix). Default OSD speed is native 2.8 MHz.
 wire cache_disable;   // ZipGS $C059 bit 7 -> sdram_cache bypass
+
+// Uthernet II (OSD System page). Main reads the same status bits to bring
+// up the network: [28:27] slot, [30:29] host interface.
+wire  [7:0] uth_ddr_burstcnt;
+wire [28:0] uth_ddr_addr;
+wire [63:0] uth_ddr_din;
+wire  [7:0] uth_ddr_be;
+wire        uth_ddr_rd, uth_ddr_we;
+`ifdef DEBUG_DDR_TRACE
+wire  [2:0] uth_slot = 3'd0;            // DDRAM belongs to the trace recorder
+wire        uth_ddr_busy = 1'b1;
+wire [63:0] uth_ddr_dout = 64'd0;
+wire        uth_ddr_dout_ready = 1'b0;
+`else
+wire  [2:0] uth_slot = (status[28:27] == 2'd1) ? 3'd3 :
+                       (status[28:27] == 2'd2) ? 3'd4 : 3'd0;
+wire        uth_ddr_busy = DDRAM_BUSY;
+wire [63:0] uth_ddr_dout = DDRAM_DOUT;
+wire        uth_ddr_dout_ready = DDRAM_DOUT_READY;
+assign DDRAM_BURSTCNT = uth_ddr_burstcnt;
+assign DDRAM_ADDR     = uth_ddr_addr;
+assign DDRAM_DIN      = uth_ddr_din;
+assign DDRAM_BE       = uth_ddr_be;
+assign DDRAM_RD       = uth_ddr_rd;
+assign DDRAM_WE       = uth_ddr_we;
+`endif
 // 14.32 MHz (step 4) re-enabled: the 1-tick races the old cap protected
 // against are now closed -- write back-pressure
 // into mem_stall, cache write-forwarding, and the clock_divider fast-escape
@@ -503,7 +533,18 @@ iigs iigs (
 	.keyboard_reset(keyboard_reset),
 	.keyboard_cold_reset(keyboard_cold_reset),
 	.capslock(capslock_led),
-	.cache_disable(cache_disable)
+	.cache_disable(cache_disable),
+
+	.uth_slot(uth_slot),
+	.uth_ddr_busy(uth_ddr_busy),
+	.uth_ddr_burstcnt(uth_ddr_burstcnt),
+	.uth_ddr_addr(uth_ddr_addr),
+	.uth_ddr_dout(uth_ddr_dout),
+	.uth_ddr_dout_ready(uth_ddr_dout_ready),
+	.uth_ddr_rd(uth_ddr_rd),
+	.uth_ddr_din(uth_ddr_din),
+	.uth_ddr_be(uth_ddr_be),
+	.uth_ddr_we(uth_ddr_we)
 );
 
 wire [23:0] addr_bus;

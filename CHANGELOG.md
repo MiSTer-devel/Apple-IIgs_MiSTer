@@ -27,6 +27,9 @@
 ### Serial (SCC)
 - The serial ports run at the programmed baud rate. The ROM self-test's fast-baud shortcuts now apply only in local loopback, so the slot firmware's 1200 baud no longer runs at ~3.6 Mbaud and the MiSTer UART works (PPP, printing, terminal programs). The ROM self-test still passes.
 
+### Ethernet (Uthernet II)
+- New: an emulated a2RetroSystems Uthernet II (WIZnet W5100) card in slot 3 or 4 (OSD → System → Uthernet II). It needs the matching MiSTer Main, which runs the W5100 model and bridges it to eth0, a macvlan, tap0 or eth1 (OSD → System → Network). Marinetti's UthernetII link layer gets a DHCP lease from the LAN; ping and HTTP work.
+
 ### Settings
 - Saved OSD settings (CPU speed, serial port, accelerator, ...) are no longer wiped when the core loads. Use OSD → System → Save settings.
 
