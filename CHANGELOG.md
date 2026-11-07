@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-08 (`releases/Apple-IIgs_20261108.rbf`)
+
+### MiSTer framework
+- `sys/` updated to the current Template_MiSTer (e901a9f, 2026-11-03), replacing the 2026-05-13 copy. This brings the Y/C (S-Video/composite) output accuracy and timing fixes, the ascal scaler reset at vsync, the analog audio pin fixes, the hps_io upload fix and support for analog triggers and force feedback requests.
+
+### Testing
+- FPGA build: Quartus 17.0, worst setup slack +0.236 ns, worst hold slack +0.187 ns.
+- DE10-Nano: GS/OS boots from a hard-disk image and prints through the printer port; The Print Shop IIgs boots from a 3.5" WOZ; the Uthernet II card gets a DHCP lease (with a Main build that has the IIgs support).
+
 ## 2026-11-07 (`releases/Apple-IIgs_20261107.rbf`)
 
 ### Floppy (IWM / Sony 3.5")
