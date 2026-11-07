@@ -24,11 +24,15 @@
 ### Keyboard (ADB)
 - An empty keyboard poll completes with a $80 header, as in KEGS, which Doom GS waits for. From multitini-one.
 
+### Serial (SCC)
+- The serial ports run at the programmed baud rate. The ROM self-test's fast-baud shortcuts now apply only in local loopback, so the slot firmware's 1200 baud no longer runs at ~3.6 Mbaud and the MiSTer UART works (PPP, printing, terminal programs). The ROM self-test still passes.
+
 ### Settings
 - Saved OSD settings (CPU speed, serial port, accelerator, ...) are no longer wiped when the core loads. Use OSD → System → Save settings.
 
 ### Testing
 - `regression.sh` 10/10, `mmu_tb`, and MMUPROBE against the physical ROM 01 and ROM 03 captures (0 differences).
+- Hardware burn-in of 232 bootable 3.5" WOZ disks on a DE10-Nano: 197 reach the game and 35 stop at a loader or text screen. The 7 that first looked like failures are slow loaders, a disk swap (The Immortal) or a different launch (Gin King), and behave the same in GSSquared.
 
 ## 2026-11-05 (`releases/Apple-IIgs_20261105.rbf`)
 
