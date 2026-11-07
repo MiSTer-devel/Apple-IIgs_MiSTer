@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2026-11-07 (`releases/Apple-IIgs_20261107.rbf`)
 
 ### Floppy (IWM / Sony 3.5")
 - IWMTest v1.0 passes all 67 checks, in the sim (ROM 3) and on a DE10-Nano (ROM 01). The IWM and Sony drive corrections come from [Henri Asseily](https://github.com/hasseily)'s multitini-one port of this core:
@@ -25,16 +25,19 @@
 - An empty keyboard poll completes with a $80 header, as in KEGS, which Doom GS waits for. From multitini-one.
 
 ### Serial (SCC)
-- The serial ports run at the programmed baud rate. The ROM self-test's fast-baud shortcuts now apply only in local loopback, so the slot firmware's 1200 baud no longer runs at ~3.6 Mbaud and the MiSTer UART works (PPP, printing, terminal programs). The ROM self-test still passes.
+- The serial ports run at the programmed baud rate. The ROM self-test's fast-baud shortcuts now apply only in local loopback, so the slot firmware's 1200 baud no longer runs at ~3.6 Mbaud. The MiSTer UART now works at the rate the IIgs programs (terminal programs, modems, printing). The ROM self-test still passes.
 
 ### Ethernet (Uthernet II)
-- New: an emulated a2RetroSystems Uthernet II (WIZnet W5100) card in slot 3 or 4 (OSD → System → Uthernet II). It needs the matching MiSTer Main, which runs the W5100 model and bridges it to eth0, a macvlan, tap0 or eth1 (OSD → System → Network). Marinetti's UthernetII link layer gets a DHCP lease from the LAN; ping and HTTP work.
+- New: an emulated a2RetroSystems Uthernet II (WIZnet W5100) card in slot 3 or 4 (OSD → System → Uthernet II). It needs the matching MiSTer Main, which runs the W5100 model and bridges it to eth0, a macvlan, tap0 or eth1 (OSD → System → Network). Marinetti's UthernetII link layer gets a DHCP lease from the LAN; ping and HTTP work. Until a MiSTer Main release includes the IIgs Uthernet II support, leave the option Off.
 
 ### Settings
 - Saved OSD settings (CPU speed, serial port, accelerator, ...) are no longer wiped when the core loads. Use OSD → System → Save settings.
 
 ### Testing
 - `regression.sh` 10/10, `mmu_tb`, and MMUPROBE against the physical ROM 01 and ROM 03 captures (0 differences).
+- FPGA build: Quartus 17.0, worst setup slack +0.481 ns.
+- Printing on a DE10-Nano at 9600 baud through the printer port: GS/OS (Teach, ImageWriter driver) and The Print Shop IIgs (test page and a full-colour sign), captured with a printer emulator.
+- Uthernet II on a DE10-Nano with a Main build that includes the support: DHCP lease, ping 20/20 (29 ms average) and HTTP from Casper.
 - Hardware burn-in of 232 bootable 3.5" WOZ disks on a DE10-Nano: 197 reach the game and 35 stop at a loader or text screen. The 7 that first looked like failures are slow loaders, a disk swap (The Immortal) or a different launch (Gin King), and behave the same in GSSquared.
 
 ## 2026-11-05 (`releases/Apple-IIgs_20261105.rbf`)
