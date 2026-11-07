@@ -1424,6 +1424,22 @@ wr_3_a[7:6]  -- bits per char
 32.5 / 115200 = 
 
 */
+// Fast-baud special cases. The ROM self-test (test 06) transmits at 1200 baud
+// (WR4=$44/$4C, WR12=$5E, WR13=$00) in local loopback (WR14 bit 4) and expects
+// each byte back within ~255 status polls, so in loopback that setting runs fast.
+// Outside loopback it is the serial firmware's normal 1200-baud setting and must
+// run at the real rate, or nothing on the MiSTer UART can decode it (a PR#2 sent
+// ~3.6 Mbaud). Likewise WR12=WR13=0 is a real 57600 baud setting outside loopback.
+// The diagnostic disk's external-loopback test (600 baud) needs a loopback
+// cable that only the simulator has (--serial-loopback), so it is sim-only.
+wire local_loopback_a = wr14_a[4];
+wire local_loopback_b = wr14_b[4];
+`ifdef SIMULATION
+wire sim_ext_loop_fast = 1'b1;
+`else
+wire sim_ext_loop_fast = 1'b0;
+`endif
+
 // Baud rate generator (BRG) and multiplier pipeline (simplified Clemens model)
 // Compute clocks_per_baud for txuart/rxuart based on WR12/WR13, WR14 (BRG enable), and WR4 multiplier
 // Z8530 async formula: BAUD = Source_Clock / (2 * (WR12/13 + 2) * ClockMode)
@@ -1449,7 +1465,7 @@ wr_3_a[7:6]  -- bits per char
                         // Special case: For the ROM selftest which sets WR12=5E, WR13=00
                         // with WR4=44 or 4C (x1 or x16 clock mode, async), we need a much faster rate
                         // The selftest expects TX to complete very quickly
-                        if (wr13_a == 8'h00 && wr12_a == 8'h5E && (wr4_a == 8'h44 || wr4_a == 8'h4C)) begin
+                        if (local_loopback_a && wr13_a == 8'h00 && wr12_a == 8'h5E && (wr4_a == 8'h44 || wr4_a == 8'h4C)) begin
                             // Use a very fast baud rate for the ROM selftest case
                             // WR12=5E, WR13=00 would normally give a slow rate, but
                             // the test expects it to complete within ~255 polls
@@ -1457,13 +1473,13 @@ wr_3_a[7:6]  -- bits per char
                             if (baud_divid_speed_a != 24'd4)
                                 $display("SCC_BRG_FAST: Applying fast baud for WR4=%02x WR12=%02x WR13=%02x WR14=%02x", wr4_a, wr12_a, wr13_a, wr14_a);
                             baud_divid_speed_a <= 24'd4;  // Fast but not instant - about 88 cycles for full TX
-                        end else if (wr13_a == 8'h00 && wr12_a == 8'hBE && wr4_a == 8'h4C) begin
+                        end else if (sim_ext_loop_fast && wr13_a == 8'h00 && wr12_a == 8'hBE && wr4_a == 8'h4C) begin
                             // Special case: Diagnostic disk external loopback test uses WR12=BE, WR13=00 (600 baud)
                             // This is too slow for simulation - use faster rate
                             if (baud_divid_speed_a != 24'd100)
                                 $display("SCC_BRG_FAST: Applying fast baud for diagnostic WR4=%02x WR12=%02x WR13=%02x WR14=%02x", wr4_a, wr12_a, wr13_a, wr14_a);
                             baud_divid_speed_a <= 24'd100;  // ~1200 clocks for 10-bit frame
-                        end else if (wr12_a == 8'h00 && wr13_a == 8'h00) begin
+                        end else if (local_loopback_a && wr12_a == 8'h00 && wr13_a == 8'h00) begin
                             // Also handle completely uninitialized case
                             baud_divid_speed_a <= 24'd4;  // Very fast
                         end else begin
@@ -1500,7 +1516,6 @@ wire [30:0] uart_setup_tx_a = { 1'b1, bit_per_char_a, 1'b0, parity_ena_a, 1'b0, 
 // Auto Echo: automatically retransmits received data
 // Local Loopback: internal TX connects to internal RX (for selftest)
 wire auto_echo_a = wr14_a[3];
-wire local_loopback_a = wr14_a[4];
 wire tx_internal_a;  // Internal TX signal
 
 // In local loopback mode, RX receives from internal TX instead of external pin
@@ -1535,7 +1550,6 @@ wire [30:0] uart_setup_rx_b = { 1'b0, bit_per_char_b, 1'b0, parity_ena_b, 1'b0, 
 wire [30:0] uart_setup_tx_b = { 1'b1, bit_per_char_b, 1'b0, parity_ena_b, 1'b0, parity_even_b, baud_divid_speed_b  } ;
 
 wire auto_echo_b = wr14_b[3];
-wire local_loopback_b = wr14_b[4];
 wire tx_internal_b;  // Internal TX signal
 
 // In local loopback mode, RX receives from internal TX instead of external pin
@@ -1620,16 +1634,16 @@ always @(posedge clk) begin
         reg [31:0] cpb_b;
         n_b = {wr13_b, wr12_b} + 16'd2;
         // Fast selftest special case for B, matching channel A behavior
-        if (wr13_b == 8'h00 && wr12_b == 8'h5E && (wr4_b == 8'h44 || wr4_b == 8'h4C)) begin
+        if (local_loopback_b && wr13_b == 8'h00 && wr12_b == 8'h5E && (wr4_b == 8'h44 || wr4_b == 8'h4C)) begin
             if (baud_divid_speed_b != 24'd4)
                 $display("SCC_BRG_FAST(B): WR4=%02x WR12=%02x WR13=%02x WR14=%02x", wr4_b, wr12_b, wr13_b, wr14_b);
             baud_divid_speed_b <= 24'd4;
-        end else if (wr13_b == 8'h00 && wr12_b == 8'hBE && wr4_b == 8'h4C) begin
+        end else if (sim_ext_loop_fast && wr13_b == 8'h00 && wr12_b == 8'hBE && wr4_b == 8'h4C) begin
             // Special case: Diagnostic disk external loopback test (600 baud)
             if (baud_divid_speed_b != 24'd100)
                 $display("SCC_BRG_FAST(B): diagnostic WR4=%02x WR12=%02x WR13=%02x WR14=%02x", wr4_b, wr12_b, wr13_b, wr14_b);
             baud_divid_speed_b <= 24'd100;
-        end else if (wr12_b == 8'h00 && wr13_b == 8'h00) begin
+        end else if (local_loopback_b && wr12_b == 8'h00 && wr13_b == 8'h00) begin
             baud_divid_speed_b <= 24'd4;
         end else begin
             mult_n_b = (({16'd0, n_b} << 1) * mult_b);

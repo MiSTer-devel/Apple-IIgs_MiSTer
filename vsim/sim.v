@@ -71,6 +71,17 @@ module emu (
         input serial_port_printer,
         output uart_txd,
 
+        // Sim-only Uthernet II: card slot (0 = off) and its DDR3 port, served
+        // by sim_main.cpp from a 64 KB window shared with the W5100 model
+        input  [2:0]  uth_slot,
+        output [28:0] uth_ddr_addr,
+        output        uth_ddr_rd,
+        output        uth_ddr_we,
+        output [63:0] uth_ddr_din,
+        output [7:0]  uth_ddr_be,
+        input  [63:0] uth_ddr_dout,
+        input         uth_ddr_dout_ready,
+
         // CPU speed control (--speed flag): 0=native 2.86MHz .. 4=14.32MHz.
         // Shares state with the ZipGS $C058-$C05F software interface.
         input [2:0] host_speed,
@@ -440,7 +451,18 @@ iigs  iigs(
         .UART_TXD(UART_TXD),
         .UART_RXD(UART_RXD),
         .UART_RTS(UART_RTS),
-        .UART_CTS(UART_CTS)
+        .UART_CTS(UART_CTS),
+
+        .uth_slot(uth_slot),
+        .uth_ddr_busy(1'b0),
+        .uth_ddr_burstcnt(),
+        .uth_ddr_addr(uth_ddr_addr),
+        .uth_ddr_dout(uth_ddr_dout),
+        .uth_ddr_dout_ready(uth_ddr_dout_ready),
+        .uth_ddr_rd(uth_ddr_rd),
+        .uth_ddr_din(uth_ddr_din),
+        .uth_ddr_be(uth_ddr_be),
+        .uth_ddr_we(uth_ddr_we)
 );
 
    //dpram #(.widthad_a(24),.prefix("fast")) fastram - unified ROM+RAM

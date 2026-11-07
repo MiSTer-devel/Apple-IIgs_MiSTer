@@ -67,6 +67,7 @@
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "sim/stb_image_write.h"
+#include "sim/sim_uthernet2.h"
 
 // Global flag for kernel trace activation (set by APPLEDISK trap)
 // 0=inactive, 1=active (tracing), 2=armed (waiting for driver return to activate)
@@ -215,6 +216,8 @@ bool serial_loopback_flag = false;
 // --serial-port / --serial-out / --serial-baud: software 8N1 receiver on the
 // MiSTer UART TX pin (after the OSD Printer/Modem selector), so a print job can
 // be captured to a file and replayed through mister_printerd by hand.
+// --uthernet <3|4>: Uthernet II card in that slot, on a virtual network (sim/sim_uthernet2.cpp)
+int uthernet_slot = 0;
 bool serial_port_printer_flag = false;     // false = Modem (ch B), true = Printer (ch A)
 FILE* serial_out_file = nullptr;
 const char* serial_out_path = nullptr;
@@ -1272,6 +1275,7 @@ int verilate() {
 		top->selftest_override = selftest_override_active ? 1 : 0;
 		top->serial_loopback = serial_loopback_flag ? 1 : 0;
 		top->serial_port_printer = serial_port_printer_flag ? 1 : 0;
+		top->uth_slot = uthernet_slot;
 
 		// CPU speed step (--speed). Level signal; zipgs_regs applies it on change.
 		// --speed-after <frame>:<code> models the REAL MiSTer boot, where the
@@ -4132,6 +4136,8 @@ int verilate() {
 		// stale files from earlier windowed runs.
         if (serial_out_file && CLK_14M.IsRising())
             serial_rx_clock(g_tick14, top->uart_txd);
+        if (uthernet_slot && CLK_14M.IsRising())
+            sim_uthernet2_clock(top);
 
         if (CLK_14M.IsRising() && top->CE_PIXEL) {
             uint32_t colour = 0xFF000000 | top->VGA_B << 16 | top->VGA_G << 8 | top->VGA_R;
@@ -4757,6 +4763,7 @@ void show_help() {
 	printf("  --cold-reset-at-frame <frame> Trigger cold reset at specified frame\n");
 	printf("  --rom <1|3|rom1|rom3>         Select ROM version (default: rom3)\n");
 	printf("  --selftest                    Enable self-test mode\n");
+	printf("  --uthernet <3|4>              Uthernet II card in slot 3 or 4 on a virtual network\n");
 	printf("  --serial-loopback             Cross-wire SCC ports A<->B (external loopback cable)\n");
 	printf("  --serial-port <modem|printer> OSD Serial Port selector (default modem = SCC ch B)\n");
 	printf("  --printer                     Same as --serial-port printer\n");
@@ -5024,6 +5031,11 @@ int main(int argc, char** argv, char** env) {
 		} else if (strcmp(argv[i], "--selftest") == 0) {
 			selftest_mode = true;
 			printf("Self-test mode enabled - will simulate Command+Option+Control+Reset\n");
+		} else if (strcmp(argv[i], "--uthernet") == 0 && i + 1 < argc) {
+			uthernet_slot = atoi(argv[++i]);
+			if (uthernet_slot != 3 && uthernet_slot != 4) { fprintf(stderr, "Error: --uthernet takes 3 or 4\n"); return 1; }
+			sim_uthernet2_init();
+			printf("Uthernet II in slot %d on the virtual network (router 10.0.2.2)\n", uthernet_slot);
 		} else if (strcmp(argv[i], "--serial-loopback") == 0) {
 			serial_loopback_flag = true;
 			printf("Serial loopback enabled - SCC channels A<->B cross-wired (external loopback cable)\n");

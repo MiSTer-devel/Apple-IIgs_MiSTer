@@ -26,7 +26,4 @@
 QUARTUS_VERSION = "17.0"
 DATE = "16:07:17  April 11, 2026"
 
-# Revisions
-
 PROJECT_REVISION = "Apple-IIgs"
-PROJECT_REVISION = "IIgs"

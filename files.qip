@@ -29,6 +29,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/twgs_regs.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/twgs_nvram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/twgs_rom.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/twgs_card.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/uthernet2.sv
 
 # --- Video ---
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/vgc.v

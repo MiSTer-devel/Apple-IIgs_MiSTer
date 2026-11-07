@@ -253,7 +253,20 @@ module iigs
    output        capslock,            // Caps Lock state (1 = Caps Lock on)
 
    // ZipGS C/D cache-disable ($C059 bit 7): 1 = bypass the SDRAM read cache
-   output        cache_disable
+   output        cache_disable,
+
+   // Uthernet II (W5100) Ethernet card. uth_slot 0 = no card, else its slot.
+   // The chip memory lives in a DDR3 window shared with Main (uthernet2.sv).
+   input  [2:0]  uth_slot,
+   input         uth_ddr_busy,
+   output [7:0]  uth_ddr_burstcnt,
+   output [28:0] uth_ddr_addr,
+   input  [63:0] uth_ddr_dout,
+   input         uth_ddr_dout_ready,
+   output        uth_ddr_rd,
+   output [63:0] uth_ddr_din,
+   output [7:0]  uth_ddr_be,
+   output        uth_ddr_we
 
 );
 
@@ -1913,7 +1926,8 @@ wire [7:0] din =
   wire [7:0] HDD_DO;
 
   // CPU data input mux: prioritize ADB reads (combinational), then IWM, then general I/O
-  wire [7:0] cpu_din = IO ? ((adb_read ? adb_dout : (iwm_strobe ? iwm_dout : io_dout)))
+  wire [7:0] cpu_din = uth_sel ? uth_dout :
+                       IO ? ((adb_read ? adb_dout : (iwm_strobe ? iwm_dout : io_dout)))
                           : (twgs_sel ? twgs_dout : din);   // TWGS bank $BC overlay (off -> din)
 
   // Mega II bus-drive window (see io_read): video data is driven during the
@@ -2092,7 +2106,7 @@ wire ready_out;
               .CLK(CLK_14M),
               .RST_N(~reset),
               .CE(phi2),
-              .RDY_IN(~hdd_dma & ~mem_stall),
+              .RDY_IN(~hdd_dma & ~mem_stall & ~uth_stall),
               .NMI_N(twgs_nmi_n),
               .IRQ_N(cpu_irq_n),
               .ABORT_N(1'b1),
@@ -2480,6 +2494,39 @@ wire ready_out;
       .DRIVE35_EJECT_REQ(drive35_eject_req)
   );
   // Internal wires not used with flux-based IWM
+
+    // Uthernet II in slot uth_slot: $C0n4-$C0n7 (n = 8 + slot). Slots 3 and 4
+    // answer even when the Control Panel has them on the internal firmware
+    // (the internal 80-column and mouse firmware use no slot I/O), as the
+    // Uthernet II manual describes; other slots need "Your Card".
+    wire uth_sel = (uth_slot != 3'd0) & valid & ~hdd_dma & ~inhibit_cxxx &
+                   (bank == 8'h00 || bank == 8'h01 || bank == 8'he0 || bank == 8'he1) &
+                   (addr[15:4] == {8'hC0, 1'b1, uth_slot}) & (addr[3:2] == 2'b01) &
+                   (SLTROMSEL[uth_slot] | uth_slot == 3'd3 | uth_slot == 3'd4);
+    wire [7:0] uth_dout;
+    wire       uth_stall;
+
+    uthernet2 uthernet2 (
+        .clk(CLK_14M),
+        .reset(reset),
+        .enable(uth_slot != 3'd0),
+        .sel(uth_sel),
+        .reg_a(addr[1:0]),
+        .we(we),
+        .din(dout),
+        .dout(uth_dout),
+        .cycle_end(phi2 & ~hdd_dma & ~mem_stall & ~uth_stall),
+        .stall(uth_stall),
+        .DDRAM_BUSY(uth_ddr_busy),
+        .DDRAM_BURSTCNT(uth_ddr_burstcnt),
+        .DDRAM_ADDR(uth_ddr_addr),
+        .DDRAM_DOUT(uth_ddr_dout),
+        .DDRAM_DOUT_READY(uth_ddr_dout_ready),
+        .DDRAM_RD(uth_ddr_rd),
+        .DDRAM_DIN(uth_ddr_din),
+        .DDRAM_BE(uth_ddr_be),
+        .DDRAM_WE(uth_ddr_we)
+    );
 
     // Legacy slot-7 HDD (supports 4 units)
     hdd hdd(
