@@ -328,9 +328,18 @@ wire [11:0]  mirror_now = {~accel_twgs_snd, ~accel_twgs_gfx,
 wire [11:0]  mirror_osd = {status[25], status[24],
                            status[23], status[20], status[19], status[18],
                            status[17], status[16:15], status[14:12]};
+// No write-back until Main has sent its first status word. hps_io latches
+// status_in on each status_set edge and Main reads that snapshot on its next
+// poll, even one that comes after it has loaded the saved .CFG. A push made
+// while the core boots with status = 0 (before Main loads the config) is
+// therefore read back later and wipes every saved OSD setting. Main sets
+// status[0] (warm reset) right after it loads the .CFG, so that is the signal.
+reg status_from_hps = 1'b0;
+always @(posedge clk_sys) if (status[0]) status_from_hps <= 1'b1;
+
 always @(posedge clk_sys) begin
 	status_mirror_set <= 1'b0;
-	if (reset) begin
+	if (reset || !status_from_hps) begin
 		mirror_hold <= 8'd255;
 		mirror_last <= mirror_osd;   // adopt the OSD state at reset: no push
 	end else if (mirror_hold != 8'd0) begin

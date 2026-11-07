@@ -235,13 +235,14 @@ module iwm_flux (
     wire [31:0] current_write_gen = buffered_write_pending ? m_data_gen :
                                     (cpu_write_data_reg ? (m_data_gen + 32'd1) : m_data_gen);
     wire       write_byte_available = buffered_write_pending || cpu_write_data_reg;
+    wire       restart_after_underrun = !IS_35_INCH || !is_async;
     wire       write_accepts_immediately =
                     m_rw_mode && is_async &&
                     ((rw_state == S_IDLE) ||
                      ((rw_state == SW_WINDOW_END) &&
                       (window_counter == 6'd1) &&
                       (write_bit_count == 3'd0)) ||
-                     (rw_state == SW_UNDERRUN));
+                     ((rw_state == SW_UNDERRUN) && restart_after_underrun));
     //=========================================================================
     // State Machine (from MAME)
     //=========================================================================
@@ -1782,7 +1783,7 @@ module iwm_flux (
                             rw_state <= S_IDLE;
                             FLUX_WRITE_STROBE <= 1'b0;
                             FLUX_WRITE <= 1'b0;
-                        end else if (write_byte_available) begin
+                        end else if (write_byte_available && restart_after_underrun) begin
                             // CPU wrote new data while in underrun - restart shifting
                             m_wsh <= current_write_data;
                             write_data_gen <= current_write_gen;
@@ -1797,6 +1798,8 @@ module iwm_flux (
                             end
 `endif
                         end else begin
+                            // In Sony async mode underrun stops the shifter until Q7 is
+                            // cleared. A data write can fill the latch but cannot restart it.
                             FLUX_WRITE_STROBE <= 1'b0;
                             FLUX_WRITE <= 1'b0;
                         end

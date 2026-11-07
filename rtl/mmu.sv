@@ -200,8 +200,11 @@ module mmu #(
   assign romd_ce = bank_log == 8'hfd && ~rom_select;
   assign rom1_ce = bank_log == 8'hfe;
 
-  // Force ROM2 on IRQ/BRK vector fetch cycles (VPB low) to return correct vectors from ROM bank FF
-  wire vec_fetch_force_rom_ce = (~vpb_n) && (bank_log == 8'h00) &&
+  // Force ROM2 on IRQ/BRK vector fetch cycles (VPB low) to return correct vectors from ROM bank FF,
+  // but only while the language card is mapped. With IOLC inhibited (shadow[6]=1) bank 00
+  // $C000-$FFFF is plain RAM and the vectors come from it: Doom GS installs its IRQ handler
+  // through the RAM vector and froze on its title screen otherwise (multitini-one, Henri Asseily).
+  wire vec_fetch_force_rom_ce = (~vpb_n) && (bank_log == 8'h00) && !shadow[6] &&
                                 ((addr_log == 16'hFFEE) || (addr_log == 16'hFFEF) ||
                                  (addr_log == 16'hFFFE) || (addr_log == 16'hFFFF));
 

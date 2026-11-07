@@ -49,8 +49,12 @@ module clock_divider (
     // it: Bouncing Kamungas touches $C0E8 and then reads the whole sector at
     // Apple II timing while the disk coasts. Same model as Clemens
     // (clem_iwm_speed_disk_gate on CLEM_IWM_FLAG_DRIVE_ON + drive_hold_ns).
-    // Driven by iwm_woz's IWM_ENBL (iwm_active) gated to the 5.25" bus (!DISK35);
-    // with mode bit 2 set (no holdover) it drops with the switch, as on hardware.
+    // Driven by iwm_woz's IWM_ENBL (iwm_active); with mode bit 2 set (no
+    // holdover) it drops with the switch, as on hardware. Not gated by DISK35:
+    // the FPI's slot-6 detect sees the IWM enable for 3.5" drives too, which is
+    // why the ROM 3.5" driver clears CYAREG bit 2 ("no motor detect") before
+    // every call. IWMTest's motor-off timer counts ($E766 loop passes in
+    // ~1.16 s) assume 1 MHz through the 3.5" holdover with CYAREG=$84.
     input  wire        disk_motor_hold,
 
     // PH0 phase/edge from the VGC/Mega II video timebase (video_timing.v).

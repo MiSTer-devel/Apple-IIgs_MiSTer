@@ -200,8 +200,10 @@ module iwm_woz (
     // IWM Active State (Motor Delay Emulation)
     //=========================================================================
 
-    // MAME delays motor-off by ~1 second unless mode bit2 requests immediate off.
-    localparam [23:0] IWM_DELAY_CYCLES = 24'd14000000; // ~1 second at 14MHz
+    // The IWM motor-off timer uses FCLK (half the controller clock).
+    // LATCH mode selects the short interval measured on the Rev B IWM.
+    localparam [23:0] IWM_DELAY_CYCLES = 24'd16645630;       // 8,322,815 FCLK
+    localparam [23:0] IWM_LATCH_DELAY_CYCLES = 24'd8126;     //     4,063 FCLK
     reg        iwm_active;
     reg [23:0] iwm_delay_cnt;
 
@@ -357,42 +359,21 @@ module iwm_woz (
 `endif
             end  // end of cpu_access_edge block
 
-            // IWM "active" timing (MAME: m_active MODE_ACTIVE/MODE_DELAY):
-            // - Rising edge of motor enable: becomes active immediately.
-            // - Falling edge of motor enable:
-            //     - mode bit2 set  -> immediate off (MODE_IDLE)
-            //     - mode bit2 clear -> delayed off (~1s, MODE_DELAY)
-            //
-            // Critical: Do NOT restart the delayed-off timer on repeated "motor off" accesses
-            // while already off; MAME only starts the 1s timer when transitioning from ACTIVE->DELAY.
-            if (cpu_access_edge && access_motor) begin
-                // drive_on will be updated to A[0] by the switch case above (nonblocking).
-                // Use the *previous* drive_on value to detect transitions.
-                if (bus_addr[0] && !drive_on) begin
-                    // Motor command OFF -> ON
+            // Only a motor command transition arms or cancels the delayed off.
+            if (cpu_access_edge && access_motor && (bus_addr[0] != drive_on)) begin
+                if (bus_addr[0]) begin
                     iwm_active <= 1'b1;
-                    iwm_delay_cnt <= IWM_DELAY_CYCLES;
-                end else if (!bus_addr[0] && drive_on) begin
-                    // Motor command ON -> OFF
-                    if (immediate_mode[2]) begin
-                        iwm_active <= 1'b0;
-                        iwm_delay_cnt <= 24'd0;
-                    end else begin
-                        iwm_active <= 1'b1;
-                        iwm_delay_cnt <= IWM_DELAY_CYCLES;
-                    end
-                end
-            end else if (drive_on) begin
-                // While motor is commanded on, stay active.
-                iwm_active <= 1'b1;
-                iwm_delay_cnt <= IWM_DELAY_CYCLES;
-            end else if (iwm_active) begin
-                // Motor commanded off: count down delayed-off, then drop to idle.
-                if (iwm_delay_cnt != 24'd0) begin
-                    iwm_delay_cnt <= iwm_delay_cnt - 1'd1;
-                end else begin
+                    iwm_delay_cnt <= 24'd0;
+                end else if (mode_reg[2]) begin
                     iwm_active <= 1'b0;
+                    iwm_delay_cnt <= 24'd0;
+                end else begin
+                    iwm_delay_cnt <= mode_reg[0] ? IWM_LATCH_DELAY_CYCLES : IWM_DELAY_CYCLES;
                 end
+            end else if (!drive_on && iwm_active) begin
+                iwm_delay_cnt <= iwm_delay_cnt - 1'd1;
+                if (iwm_delay_cnt == 24'd1)
+                    iwm_active <= 1'b0;
             end
         end  // end of else (not reset)
     end  // end of always
@@ -479,6 +460,7 @@ module iwm_woz (
     wire        drive35_step_dir;
     wire        drive35_motor_on_sense;
     wire        drive35_at_track0;
+    wire        drive35_tach_n;
     // Write outputs from drive35
     wire [7:0]  drive35_write_byte;
     wire        drive35_write_we;
@@ -542,6 +524,7 @@ module iwm_woz (
         .STEP_DIR_OUT(drive35_step_dir),
         .MOTOR_ON_SENSE_OUT(drive35_motor_on_sense),
         .AT_TRACK0_OUT(drive35_at_track0),
+        .TACH_N_OUT(drive35_tach_n),
         .MOTOR_SPINNING(drive35_motor_spinning),
         .DRIVE_READY(drive35_ready),
         .TRACK(drive35_track),
@@ -667,6 +650,7 @@ module iwm_woz (
     wire        drive35_2_step_dir;
     wire        drive35_2_motor_on_sense;
     wire        drive35_2_at_track0;
+    wire        drive35_2_tach_n;
 
     flux_drive drive35_2 (
         .HEAD_QTRACK(),
@@ -695,6 +679,7 @@ module iwm_woz (
         .STEP_DIR_OUT(drive35_2_step_dir),
         .MOTOR_ON_SENSE_OUT(drive35_2_motor_on_sense),
         .AT_TRACK0_OUT(drive35_2_at_track0),
+        .TACH_N_OUT(drive35_2_tach_n),
         .MOTOR_SPINNING(drive35_2_motor_spinning),
         .DRIVE_READY(drive35_2_ready),
         .TRACK(),
@@ -794,6 +779,7 @@ module iwm_woz (
         .STEP_DIR_OUT(),
         .MOTOR_ON_SENSE_OUT(),
         .AT_TRACK0_OUT(),
+        .TACH_N_OUT(),
         .MOTOR_SPINNING(drive525_motor_spinning),
         .DRIVE_READY(drive525_ready),
         .TRACK(drive525_track_7bit),
@@ -1010,11 +996,15 @@ module iwm_woz (
             4'h1: drive35_computed_sense = smartport_mode_sense ? 1'b1 : drive35_step_dir;
             4'h2: drive35_computed_sense = ~DISK_READY[2];         // ~DISK_MOUNTED
             4'h4: drive35_computed_sense = smartport_mode_sense ? 1'b1 : ~drive35_step_busy;
-            4'h8: drive35_computed_sense = smartport_mode_sense ? 1'b1 : ~drive35_motor_on_sense;
+            4'h5, 4'h7, 4'hD, 4'hF:
+                  drive35_computed_sense = smartport_mode_sense;  // DD GCR drive present
+            4'h6: drive35_computed_sense = smartport_mode_sense || (DISK_READY[2] && !WOZ_TRACK3_WP);
+            4'h8: drive35_computed_sense = smartport_mode_sense || !is_35_inch || !iwm_active ||
+                                          !drive35_motor_on_sense;
             4'hA: drive35_computed_sense = smartport_mode_sense ? 1'b1 : ~drive35_at_track0;
             4'hB: drive35_computed_sense = smartport_mode_sense ? 1'b1 : ~drive35_ready;
             4'hC: drive35_computed_sense = ~drive35_disk_switched;  // NEVER override
-            4'hE: drive35_computed_sense = smartport_mode_sense ? 1'b1 : ~drive35_ready;
+            4'hE: drive35_computed_sense = smartport_mode_sense || drive35_tach_n;
             default: drive35_computed_sense = 1'b1;
         endcase
     end
@@ -1027,11 +1017,14 @@ module iwm_woz (
             4'h1: drive35_2_computed_sense = smartport_mode_sense ? 1'b1 : drive35_2_step_dir;
             4'h2: drive35_2_computed_sense = 1'b1;                 // No disk mounted
             4'h4: drive35_2_computed_sense = smartport_mode_sense ? 1'b1 : ~drive35_2_step_busy;
-            4'h8: drive35_2_computed_sense = smartport_mode_sense ? 1'b1 : ~drive35_2_motor_on_sense;
+            4'h5, 4'h6, 4'h7, 4'hD, 4'hF:
+                  drive35_2_computed_sense = smartport_mode_sense; // DD GCR drive with no writable media
+            4'h8: drive35_2_computed_sense = smartport_mode_sense || !is_35_inch || !iwm_active ||
+                                            !drive35_2_motor_on_sense;
             4'hA: drive35_2_computed_sense = smartport_mode_sense ? 1'b1 : ~drive35_2_at_track0;
             4'hB: drive35_2_computed_sense = smartport_mode_sense ? 1'b1 : ~drive35_2_ready;
             4'hC: drive35_2_computed_sense = ~drive35_2_disk_switched;  // NEVER override
-            4'hE: drive35_2_computed_sense = smartport_mode_sense ? 1'b1 : ~drive35_2_ready;
+            4'hE: drive35_2_computed_sense = smartport_mode_sense || drive35_2_tach_n;
             default: drive35_2_computed_sense = 1'b1;
         endcase
     end
@@ -1061,7 +1054,15 @@ module iwm_woz (
     // bit7=1 ($A7 instead of $27) and reports drvr_disk_sw. Keep the idle-high override
     // only on the non-3.5" path; let active Sony routing return the real multiplexed
     // status values.
-    wire drive_sense = (flux_is_35_inch) ? ((drive_sel == 0) ? (drive35_present ? drive35_computed_sense : 1'b1) :
+    // Sense follows DISK35 ($C031 bit 6, /ENBL3.5) while it is set: the IWM
+    // is then on the 3.5" bus, and an EMPTY Sony drive must still answer
+    // (/DIP high = no disk, /DSW latched). The motor-based flux_is_35_inch alone
+    // let the sense fall back to the Disk II ~8 ms after an eject (the 3.5" hold
+    // only re-arms with media present, and $C0E9 spins the Disk II model), so
+    // IWMTest read the 5.25" drive for Status $02 and $0C after ejecting.
+    // The data path keeps the motor-based routing.
+    wire sense_is_35_inch = is_35_inch || flux_is_35_inch;
+    wire drive_sense = (sense_is_35_inch) ? ((drive_sel == 0) ? (drive35_present ? drive35_computed_sense : 1'b1) :
                                                              (drive35_2_present ? drive35_2_computed_sense : 1'b1)) :
                                            (smartport_mode_sense ? 1'b1 :
                                                                    ((drive_sel == 0) ? drive525_sense : 1'b1));
