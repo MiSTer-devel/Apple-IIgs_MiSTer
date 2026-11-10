@@ -212,6 +212,7 @@ vluint64_t selftest_start_time = 0;
 
 // --serial-loopback: cross-wire SCC channel A<->B (external loopback cable)
 bool serial_loopback_flag = false;
+bool twgs_flag = false;           // --twgs: Accelerator card = TransWarp GS
 
 // --serial-port / --serial-out / --serial-baud: software 8N1 receiver on the
 // MiSTer UART TX pin (after the OSD Printer/Modem selector), so a print job can
@@ -1274,6 +1275,7 @@ int verilate() {
 		// Set self-test override signal to hardware
 		top->selftest_override = selftest_override_active ? 1 : 0;
 		top->serial_loopback = serial_loopback_flag ? 1 : 0;
+		top->twgs_card = twgs_flag ? 1 : 0;
 		top->serial_port_printer = serial_port_printer_flag ? 1 : 0;
 		top->uth_slot = uthernet_slot;
 
@@ -4241,6 +4243,7 @@ std::string disk_image = "";   // HDD unit 0 (--disk)
 std::string disk_image2 = "";  // HDD unit 1 (--disk2)
 std::string woz_image = "";  // WOZ disk image (flux-based)
 int woz_mount_index = -1;     // Auto-detected: 4=5.25", 5=3.5"
+int disk_mount_frame = -1;    // --disk-mount-frame: mount the --disk HDD at this frame (models an MGL mounting after the ROM starts)
 int woz_mount_frame = -1;     // --woz-mount-frame: insert the WOZ disk at this frame (models mounting while the ROM is booting)
 // --woz-swap <frame>:<file>: mount another floppy at a frame (models an OSD disk swap).
 // <file> = eject35 / eject525 ejects that drive instead (OSD Backspace unmount).
@@ -4765,6 +4768,7 @@ void show_help() {
 	printf("  --selftest                    Enable self-test mode\n");
 	printf("  --uthernet <3|4>              Uthernet II card in slot 3 or 4 on a virtual network\n");
 	printf("  --serial-loopback             Cross-wire SCC ports A<->B (external loopback cable)\n");
+	printf("  --twgs                        Accelerator card = TransWarp GS (default ZipGS)\n");
 	printf("  --serial-port <modem|printer> OSD Serial Port selector (default modem = SCC ch B)\n");
 	printf("  --printer                     Same as --serial-port printer\n");
 	printf("  --serial-out <file>           Decode the MiSTer UART TX pin (8N1) into <file>\n");
@@ -4780,6 +4784,7 @@ void show_help() {
 	printf("  --disk2 <filename>            Use specified HDD image for slot 7 unit 1\n");
 	printf("  --woz <filename>              Floppy image: .woz, or .po/.dsk/.do/.nib/.2mg (auto-converted to WOZ)\n");
 	printf("  --woz-mount-frame <frame>     Insert the --woz disk at this frame instead of at power-on (headless)\n");
+	printf("  --disk-mount-frame <frame>    Mount the --disk HDD at this frame instead of at power-on\n");
 	printf("  --woz-swap <frame>:<file>     Mount another floppy at a frame, like an OSD disk swap (repeatable, headless)\n");
 	printf("  --enable-csv-trace            Enable CSV memory trace logging (vsim_trace.csv)\n");
 	printf("  --dump-csv-after <frame>      Start dumping vsim_trace.csv after a frame number\n");
@@ -5036,6 +5041,9 @@ int main(int argc, char** argv, char** env) {
 			if (uthernet_slot != 3 && uthernet_slot != 4) { fprintf(stderr, "Error: --uthernet takes 3 or 4\n"); return 1; }
 			sim_uthernet2_init();
 			printf("Uthernet II in slot %d on the virtual network (router 10.0.2.2)\n", uthernet_slot);
+		} else if (strcmp(argv[i], "--twgs") == 0) {
+			twgs_flag = true;
+			printf("Accelerator card: TransWarp GS\n");
 		} else if (strcmp(argv[i], "--serial-loopback") == 0) {
 			serial_loopback_flag = true;
 			printf("Serial loopback enabled - SCC channels A<->B cross-wired (external loopback cable)\n");
@@ -5129,6 +5137,10 @@ int main(int argc, char** argv, char** env) {
             s.done = false;
             woz_swaps.push_back(s);
             printf("Will mount %s to index %d at frame %d\n", s.path.c_str(), s.index, s.frame);
+            i++;
+        } else if (strcmp(argv[i], "--disk-mount-frame") == 0 && i + 1 < argc) {
+            disk_mount_frame = std::stoi(argv[i + 1]);
+            printf("Will mount the HDD at frame %d\n", disk_mount_frame);
             i++;
         } else if (strcmp(argv[i], "--woz-mount-frame") == 0 && i + 1 < argc) {
             woz_mount_frame = std::stoi(argv[i + 1]);
@@ -5406,7 +5418,7 @@ int main(int argc, char** argv, char** env) {
     }
 
     // Mount HDD images into slot 7 backend (only if specified via --disk/--disk2)
-    if (!disk_image.empty()) {
+    if (!disk_image.empty() && disk_mount_frame < 0) {
         printf("Mounting disk image: %s to index 1 (HDD slot 7 unit 0)\n", disk_image.c_str());
         blockdevice.MountDisk(disk_image.c_str(), 1);
     }
@@ -5515,6 +5527,11 @@ int main(int argc, char** argv, char** env) {
                        save_memory_dump(video.count_frame);
                        memory_dump_frames.erase(it2);
                    }
+               }
+               if (disk_mount_frame >= 0 && video.count_frame >= disk_mount_frame && !disk_image.empty()) {
+                   printf("Mounting HDD at frame %d: %s to index 1\n", video.count_frame, disk_image.c_str());
+                   blockdevice.MountDisk(disk_image.c_str(), 1);
+                   disk_mount_frame = -1;
                }
                if (woz_mount_frame >= 0 && video.count_frame >= woz_mount_frame) {
                    printf("Inserting WOZ image at frame %d: %s to index %d\n", video.count_frame, woz_image.c_str(), woz_mount_index);

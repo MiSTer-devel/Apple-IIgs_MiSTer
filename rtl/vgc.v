@@ -500,17 +500,13 @@ wire [3:0]  dhr_color = (dhr_nib == 2'd0) ? dhr_hold[15:12] :
                         (dhr_nib == 2'd2) ? dhr_hold[7:4]   : dhr_hold[3:0];
 wire [11:0] dhr_rgb   = dhr_pal(dhr_color);
 
-// Graphics active window. Dhires: with the head-start (init emits bits 0/1
-// at BLE-2/BLE-1, pre-shifted preload from bit 2), stream bit j displays at
-// H = BLE-1+j -- window [BLE-1, BRE-2] = the full 560px. The color decode
-// consumes the same corrected stream with its 6px LUT latency next to it.
-// Color dhires and hires trail by 5px (dhr_lut / apple2_shift_reg), so pixel
-// j displays at BLE+5+j. Lores goes through lores_rgb_d and lands with the
-// text, at BLE+1+j. Windows are inclusive and exactly 560px wide.
-wire [9:0] gfx_lb = dhires_mode ? (DHRG_MONO ? BLE-10'd1 : BLE + 10'd5) :
-                    lores_mode  ? (BLE + 10'd1) : (BLE + 10'd5);
-wire [9:0] gfx_rb = dhires_mode ? (DHRG_MONO ? BRE-10'd2 : BRE + 10'd4) :
-                    lores_mode  ? BRE : (BRE + 10'd4);
+// Where each graphics stream lands. Dhires: with the head-start (init emits
+// bits 0/1 at BLE-2/BLE-1, pre-shifted preload from bit 2), mono stream bit j
+// displays at H = BLE-1+j. The color decode consumes the same corrected stream
+// with its 6px LUT latency next to it, so color dhires and hires (dhr_lut /
+// apple2_shift_reg) put pixel j at BLE+5+j. Lores goes through lores_rgb_d and
+// lands with the text, at BLE+1+j. The output stage lines them all up at
+// BLE+5 (see iie_rgb).
 // ---------------------------------------------------------------------------
 
 // Apple II color generation logic
@@ -804,6 +800,30 @@ reg [16:0] aux;
 // byte is addressed early enough to settle before its reload. aux[16] still drives the
 // chram_x increment cadence unchanged.
 reg aux_bank_early;
+// ---- IIe output alignment (#4): see the "Mode-dependent output" comment below.
+// iie_slow is text / lores / IIe border on the text window [BLE+1, BRE]; it and
+// the mono dhires stream are delayed so they land with hires at BLE+5. The
+// taps step on ce_pix: after a step, slow_d[n] is the pixel n+1 steps back,
+// so slow_d[3] is 4 pixels and mono_d[5] 6 pixels behind the live pixel.
+wire        iie_v      = (V >= V_SCAN) && (V < BBE);
+wire        iie_txtwin = iie_v && (H >= BLE + 10'd1) && (H < BRE + 10'd1);
+wire        iie_gfxwin = iie_v && (H >= BLE + 10'd5) && (H <= BRE + 10'd4);
+wire        iie_fast   = GR && (dhires_mode ? !DHRG_MONO : !lores_mode); // hires, color dhires
+wire        iie_mono   = GR && dhires_mode && DHRG_MONO;
+wire [11:0] iie_slow   = !iie_txtwin ? BORGB :
+                         GR          ? graphics_rgb :
+                         textpixel   ? TRGB : BRGB;
+reg  [11:0] slow_d [0:3];
+reg  [11:0] mono_d [0:5];
+always @(posedge clk_vid) if (ce_pix) begin
+	slow_d[0] <= iie_slow;     slow_d[1] <= slow_d[0];
+	slow_d[2] <= slow_d[1];    slow_d[3] <= slow_d[2];
+	mono_d[0] <= graphics_rgb; mono_d[1] <= mono_d[0]; mono_d[2] <= mono_d[1];
+	mono_d[3] <= mono_d[2];    mono_d[4] <= mono_d[3]; mono_d[5] <= mono_d[4];
+end
+wire [11:0] iie_rgb = (iie_gfxwin && iie_fast) ? graphics_rgb :
+                      (iie_gfxwin && iie_mono) ? mono_d[5]    : slow_d[3];
+
 always @(posedge clk_vid) 
 begin
    if (ce_pix)
@@ -1041,24 +1061,24 @@ begin
 
 
 
-// Mode-dependent border generation. Each window is exactly 560 (IIe) or
-// 640 (SHR) pixels and starts where that mode's pixel 0 lands:
-//   text, lores:          H = BLE+1 .. BRE     (text_shift_reg / lores_rgb_d)
-//   hires, color dhires:  H = BLE+5 .. BRE+4   (apple2_shift_reg / dhr_lut latency)
-//   mono dhires:          H = BLE-1 .. BRE-2   (head-start bits at BLE-2/BLE-1)
-//   SHR:                  H = BL+1  .. BR-1
-// Hires and color dhires therefore sit 4px right of text. Moving them means
-// fetching 4 dots earlier, and the IIe floating bus reads video_data on this
-// fetch schedule (tuned to FLOATBUS captures), so that needs a display-side
-// line buffer like shr_line first.
-if ((!SHRG && GR && ((H < gfx_lb || H > gfx_rb) || (V < V_SCAN || V >= BBE))) ||
-    // Text bit 0 is valid at BLE+1 (text_shift_reg loads at xpos 0 = BLE).
-    (!SHRG && !GR && ((H < BLE + 10'd1 || H >= BRE + 10'd1) || (V < V_SCAN || V >= BBE))) ||
-    (SHRG && ((H < (BL+1) || H >= BR || V < V_SCAN || V >= BB))))  // SHRG: 33px left border (mem latency), 639px active
+// Mode-dependent output. Each window is exactly 560 (IIe) or 640 (SHR) pixels.
+// Where each IIe pipeline produces pixel 0:
+//   text, lores:          H = BLE+1  (text_shift_reg / lores_rgb_d)
+//   hires, color dhires:  H = BLE+5  (apple2_shift_reg / dhr_lut look-ahead)
+//   mono dhires:          H = BLE-1  (head-start bits at BLE-2/BLE-1)
+// Hires can't come earlier without fetching earlier, and the IIe floating bus
+// reads video_data on this fetch schedule (tuned to FLOATBUS captures). So the
+// others wait for it instead (#4): text, lores and the IIe border go through a
+// 4-pixel delay and mono dhires a 6-pixel one, and every IIe mode shows pixel
+// j at H = BLE+5+j, window BLE+5 .. BRE+4. Display only: the fetch, the
+// floating bus and SHR are unchanged.
+//   SHR:                  H = BL+1  .. BR (pixel 639 is computed at H = BR-1
+//   and held at BR; the border used to start at BR and hid it)
+if (SHRG && ((H < (BL+1) || H > BR || V < V_SCAN || V >= BB)))  // SHRG: pixel j at H = BL+1+j, all 640
 begin
-R <= {BORGB[11:8],BORGB[11:8]};
-G <= {BORGB[7:4],BORGB[7:4]};
-B <= {BORGB[3:0],BORGB[3:0]};
+r0 <= {BORGB[11:8],BORGB[11:8]};
+g0 <= {BORGB[7:4],BORGB[7:4]};
+b0 <= {BORGB[3:0],BORGB[3:0]};
 end
 else
 begin
@@ -1069,27 +1089,42 @@ begin
         // Also at H=34, shrg_r_pix has stale data (computed H=32 from wrong video_data)
         // So bypass H=33-34 for 320 mode, H=33 for 640 mode
         if (H == (BL+1) || (H == (BL+2) && !scb[7])) begin
-            R <= {first_pix_r, first_pix_r};
-            G <= {first_pix_g, first_pix_g};
-            B <= {first_pix_b, first_pix_b};
+            r0 <= {first_pix_r, first_pix_r};
+            g0 <= {first_pix_g, first_pix_g};
+            b0 <= {first_pix_b, first_pix_b};
         end else begin
-            R <= {shrg_r_pix,shrg_r_pix};
-            G <= {shrg_g_pix,shrg_g_pix};
-            B <= {shrg_b_pix,shrg_b_pix};
+            r0 <= {shrg_r_pix,shrg_r_pix};
+            g0 <= {shrg_g_pix,shrg_g_pix};
+            b0 <= {shrg_b_pix,shrg_b_pix};
         end
-    end else if (GR) begin
-        // Graphics mode (lores/hires)
-        R <= {graphics_rgb[11:8],graphics_rgb[11:8]};
-        G <= {graphics_rgb[7:4],graphics_rgb[7:4]};
-        B <= {graphics_rgb[3:0],graphics_rgb[3:0]};
     end else begin
-        // Text mode
-        R <= textpixel ? {TRGB[11:8],TRGB[11:8]} : {BRGB[11:8],BRGB[11:8]};
-        G <= textpixel ? {TRGB[7:4],TRGB[7:4]} : {BRGB[7:4],BRGB[7:4]};
-        B <= textpixel ? {TRGB[3:0],TRGB[3:0]} : {BRGB[3:0],BRGB[3:0]};
+        // Apple II modes, aligned (see iie_rgb)
+        r0 <= {iie_rgb[11:8],iie_rgb[11:8]};
+        g0 <= {iie_rgb[7:4],iie_rgb[7:4]};
+        b0 <= {iie_rgb[3:0],iie_rgb[3:0]};
     end
 end
 end
+// Centring (display only). The VGC draws SHR at H 45..683 and the IIe modes at
+// H 89..648 inside the 744-pixel visible line (0..743), which leaves both a
+// few pixels left of centre. A short delay on the finished pixel moves each
+// picture to the middle: SHR by 7 (borders 52/53) and IIe by 3 (92/92). The
+// fetch schedule, floating bus and Mega II counters don't move. R/G/B come
+// straight from the ce_pix-gated chain, so they now change on the ce_pix edge
+// together with sync and blank (they used to change one clk_vid later). A
+// free-running output register here would cost no time on the FPGA but a
+// whole pixel in the default sim, where ce_pix is always 1.
+localparam [2:0] CENTRE_SHR = 3'd7;
+localparam [2:0] CENTRE_IIE = 3'd3;
+reg  [7:0] r0, g0, b0;
+reg [23:0] centre_d [0:6];
+always @(posedge clk_vid) if (ce_pix) begin
+	centre_d[0] <= {r0, g0, b0};
+	centre_d[1] <= centre_d[0]; centre_d[2] <= centre_d[1]; centre_d[3] <= centre_d[2];
+	centre_d[4] <= centre_d[3]; centre_d[5] <= centre_d[4]; centre_d[6] <= centre_d[5];
+end
+always @(*)
+	{R, G, B} = centre_d[(SHRG ? CENTRE_SHR : CENTRE_IIE) - 3'd1];
 
 
 //assign a = chrom_data_out[chpos_x[2:0]];

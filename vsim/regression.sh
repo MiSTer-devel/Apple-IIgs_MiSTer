@@ -120,6 +120,27 @@ else
     echo "  SKIP: GS/OS - missing reference image"
 fi
 
+# TransWarp GS: boot GS/OS with the TWGS card (--twgs), wait for the Finder,
+# open the CDA menu with Ctrl-OA-Esc and check that the card's ROM installed
+# its "TransWarp GS" CDA (and GameHacker). Runs on a throwaway copy of
+# gsos.hdv so the original is never written. ~2400 frames: the card's startup
+# animation plus a slower Finder load.
+echo "Running TransWarp GS CDA test..."
+cp gsos.hdv twgs_tmp.hdv
+./obj_dir/Vemu --headless --no-cpu-log --disk twgs_tmp.hdv --fixed-time --twgs \
+    --send-keys '2400:\b\m\e\M\c' --stop-at-frame 2430 --screenshot 2430 2>&1 | tail -200 > twgs_cda.txt
+rm -f twgs_tmp.hdv
+if [ -f "regression_images/twgs_cda_screenshot_frame_2430.png" ]; then
+    if diff screenshot_frame_2430.png regression_images/twgs_cda_screenshot_frame_2430.png > /dev/null 2>&1; then
+        echo "  PASS: TransWarp GS CDA"
+    else
+        echo "  FAIL: TransWarp GS CDA - screenshot differs"
+        FAILED=1
+    fi
+else
+    echo "  SKIP: TransWarp GS CDA - missing reference image"
+fi
+
 echo "Running Arkanoid test..."
 ./obj_dir/Vemu --disk arkanoid.hdv --stop-at-frame 485 --screenshot 485 &> arkanoid.txt
 if [ -f "regression_images/arkanoid_screenshot_frame_0485.png" ]; then

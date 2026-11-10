@@ -52,7 +52,6 @@ assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 assign DDRAM_CLK = clk_sys;
 `endif
 
-assign VGA_SL = 0;
 assign VGA_F1 = 0;
 assign VGA_SCALER = 0;
 assign VGA_DISABLE = 0;
@@ -72,16 +71,23 @@ assign BUTTONS = 0;
 
 //////////////////////////////////////////////////////////////////
 
-wire [1:0] ar = status[122:121];
-
-assign VIDEO_ARX = (!ar) ? 12'd4 : (ar - 1'd1);
-assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
+// Video settings (P3). They change the monitor picture, not the machine, so
+// they act at once. VIDEO_ARX/ARY come from video_freak (video out block).
+wire [1:0] ar    = status[122:121];
+wire [1:0] scale = status[32:31];
+wire       vcrop = status[33];
+wire [2:0] sfx   = status[36:34];          // 0 None, 1 HQ2x, 2-4 CRT 25/50/75%
+wire [2:0] sl    = sfx ? sfx - 3'd1 : 3'd0;
+// Super Hi-Res frames run at 16.36 MHz (rtl/video_geom.sv), 7 CLK_VIDEO
+// clocks a pixel, so Fx, HQ2x and gamma work in every mode.
+wire       shr_frame;
+wire       scandoubler = forced_scandoubler || (sfx != 3'd0);
+assign VGA_SL = sl[1:0];
+wire [21:0] gamma_bus;
 
 `include "build_id.v" 
 localparam CONF_STR = {
 	"Apple-IIgs;UART19200:9600:4800:2400:1200:300;",
-	"-;",
-	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"-;",
 	"S0,HDVPO 2MG;",
 	"S1,HDVPO 2MG;",
@@ -111,6 +117,12 @@ localparam CONF_STR = {
 	"P2-;",
 	"P2O[28:27],Uthernet II,Off,Slot 3,Slot 4;",
 	"P2O[30:29],Network,eth0,macvlan,tap0,eth1;",
+	"P3,Video;",
+	"P3-;",
+	"P3O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"P3O[32:31],Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer;",
+	"P3O[33],Vertical crop,Off,216p(5x);",
+	"P3O[36:34],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"-;",
 
 	"R0,Warm Reset;",
@@ -164,7 +176,7 @@ hps_io #(.CONF_STR(CONF_STR),.VDNUM(5)) hps_io
 	.clk_sys(clk_sys),
 	.HPS_BUS(HPS_BUS),
 	.EXT_BUS(),
-	.gamma_bus(),
+	.gamma_bus(gamma_bus),
 
 	.forced_scandoubler(forced_scandoubler),
 
@@ -255,6 +267,7 @@ wire reset = RESET | ~locked | warm_reset_trigger | cold_reset_trigger | buttons
 
 // cold_reset is 1 for power-on (RESET/~locked) or explicit cold reset or ROM switch, 0 for warm reset
 wire cold_reset = RESET | ~locked | cold_reset_trigger;
+
 
 wire selftest_override = status[10];
 wire rom_select = ~status[11];  // iigs.sv: 0=ROM3, 1=ROM1 (status=0 default -> ROM1)
@@ -401,6 +414,7 @@ wire phi0;
 wire clk_7M;
 wire drive35_eject_req;
 wire [7:0] iigs_r, iigs_g, iigs_b;
+wire       iigs_shrg;
 
 iigs iigs (
 	.reset(reset),
@@ -421,6 +435,7 @@ iigs iigs (
 	.VBlank(vblank),
 	.HS(hsync),
 	.VS(vsync),
+	.SHRG(iigs_shrg),
 	.AUDIO_L(AUDIO_L),
 	.AUDIO_R(AUDIO_R),
 	/* hard drive (supports 2 units - ProDOS limit) */
@@ -794,14 +809,56 @@ end
 
 wire hsync,vsync;
 wire hblank,vblank;
-assign CE_PIXEL=ce_pix;
+wire vga_de_raw = ~(vblank | hblank);
 
-assign VGA_HS=hsync;
-assign VGA_VS=vsync;
+// ---- Scaler: aspect ratio, integer scale, vertical crop (sys/video_freak) ----
+// The picture sent is 52 Mega II cycles wide (6 border + 40 picture + 6
+// border, rtl/video_geom.sv) by 240 (NTSC) or 290 (PAL, LANGSEL bit 4) lines:
+// 728 dots at 14.318 MHz in the Apple II modes, 832 at 16.36 MHz in Super
+// Hi-Res. Both are the same width on the screen, so one aspect fits both.
+//   PAR (NTSC) = 6.1364 / 14.3182 = 3/7: 728 x 3/7 : 240 = 312:240 = 13:10 (1.300)
+//   PAR (PAL)  = 7.3750 / 14.3182      : 728 x 0.515 : 290 = 481:372     (1.293)
+// Vertical crop at 1080p HDMI: NTSC keeps 216 lines (240 -> 5x, cuts 24 border
+// lines; the picture is lines 19-218, the centred window 12-227). A PAL frame
+// has 50 more top-border lines and 216 would cut picture at any CROP_OFF, so
+// PAL keeps 270 lines (290 -> 4x instead of 3x; window 10-279, picture 69-268).
+reg  [9:0] vid_lines, vid_lines_cnt;
+always @(posedge clk_vid) if (ce_pix) begin
+	reg old_de, old_vs;
+	old_de <= vga_de_raw;
+	old_vs <= vsync;
+	if (vga_de_raw & ~old_de) vid_lines_cnt <= vid_lines_cnt + 1'd1;
+	if (vsync & ~old_vs) begin           // vsync is active low: end of sync
+		vid_lines     <= vid_lines_cnt;
+		vid_lines_cnt <= 10'd0;
+	end
+end
+wire vid_pal  = vid_lines > 10'd260;
+// The crop counts the lines it receives, so it is off when the scandoubler is.
+wire vcrop_en = vcrop && HDMI_WIDTH == 12'd1920 && HDMI_HEIGHT == 12'd1080
+                && !scandoubler;
+// Cross into the mixer's clock: one bit, changes only on a LANGSEL write.
+reg vid_pal_v;
+wire mix_de;                            // video_mixer DE, into video_freak
+always @(posedge CLK_VIDEO) vid_pal_v <= vid_pal;
 
-//assign VGA_HB=hblank;
-//assign VGA_VB=vblank;
-assign VGA_DE =  ~(vblank | hblank);
+video_freak video_freak
+(
+	.CLK_VIDEO(CLK_VIDEO),
+	.CE_PIXEL(CE_PIXEL),
+	.VGA_VS(VGA_VS),
+	.HDMI_WIDTH(HDMI_WIDTH),
+	.HDMI_HEIGHT(HDMI_HEIGHT),
+	.VGA_DE(VGA_DE),
+	.VIDEO_ARX(VIDEO_ARX),
+	.VIDEO_ARY(VIDEO_ARY),
+	.VGA_DE_IN(mix_de),
+	.ARX((!ar) ? (vid_pal_v ? 12'd481 : 12'd13) : (ar - 1'd1)),
+	.ARY((!ar) ? (vid_pal_v ? 12'd372 : 12'd10) : 12'd0),
+	.CROP_SIZE(vcrop_en ? (vid_pal_v ? 12'd270 : 12'd216) : 12'd0),
+	.CROP_OFF(5'd0),
+	.SCALE({1'b0, scale})
+);
 
 `ifdef DEBUG_PIXEL_OVERLAY
 // ---- TEMPORARY: floppy-boot chain probe (no floppy boots on HW 2026-07-09) ----
@@ -870,16 +927,97 @@ wire       dbg_area = (dbg_py >= 9'd100) && (dbg_py < 9'd132) &&
                       (dbg_px >= 10'd16) && (dbg_px < 10'd16 + 10'd480);
 wire [4:0] dbg_idx  = (dbg_px - 10'd16) >> 4;
 wire       dbg_bit  = dbg_sample[5'd29 - dbg_idx];
-assign VGA_R = dbg_area ? (dbg_bit ? 8'hFF : 8'h18) : iigs_r;
-assign VGA_G = dbg_area ? (dbg_bit ? 8'hFF : 8'h18) : iigs_g;
-assign VGA_B = dbg_area ? 8'h00                     : iigs_b;
+wire [7:0] pix_r = dbg_area ? (dbg_bit ? 8'hFF : 8'h18) : iigs_r;
+wire [7:0] pix_g = dbg_area ? (dbg_bit ? 8'hFF : 8'h18) : iigs_g;
+wire [7:0] pix_b = dbg_area ? 8'h00                     : iigs_b;
 `else
-assign VGA_R = iigs_r;
-assign VGA_G = iigs_g;
-assign VGA_B = iigs_b;
+wire [7:0] pix_r = iigs_r;
+wire [7:0] pix_g = iigs_g;
+wire [7:0] pix_b = iigs_b;
 `endif
 
-assign CLK_VIDEO=clk_vid;
+// ---- Video out: video_mixer (Scandoubler Fx, gamma) ----
+// The machine side runs on clk_vid (28.6 MHz) and steps one pixel on each
+// ce_pix (14.318 MHz). The mixer and scaler run on clk_114 (114.55 MHz, the
+// same PLL, edge-aligned with clk_vid), 8 clocks per machine pixel, so that
+// video_geom can play Super Hi-Res back at exactly 7 clocks a pixel
+// (16.36 MHz) and still give the scandoubler and gamma 4+ clocks a pixel.
+// Sync, blank and RGB all change on the ce_pix edge (E) and hold for 8
+// clk_114 clocks; they are captured three clk_114 edges after the toggle.
+assign CLK_VIDEO = clk_114;
+
+reg ce_tgl = 1'b0;                       // flips once per machine pixel
+always @(posedge clk_vid) if (ce_pix) ce_tgl <= ~ce_tgl;
+
+reg       mix_ce;
+reg [7:0] mix_r, mix_g, mix_b;
+reg       mix_hs, mix_vs, mix_hb, mix_vb;
+always @(posedge CLK_VIDEO) begin
+	reg tgl_d1, tgl_d2, tgl_d3;
+	tgl_d1 <= ce_tgl;                    // E+1 clk_114
+	tgl_d2 <= tgl_d1;                    // E+2
+	tgl_d3 <= tgl_d2;                    // E+3
+	mix_ce <= tgl_d2 ^ tgl_d3;
+	if (tgl_d2 ^ tgl_d3) begin
+		{mix_r, mix_g, mix_b} <= {pix_r, pix_g, pix_b};
+		mix_hs <= ~hsync;                // video_timing syncs are active low
+		mix_vs <= ~vsync;
+		mix_hb <= hblank;
+		mix_vb <= vblank;
+	end
+end
+
+// Hardware border geometry (rtl/video_geom.sv): a 728-dot window (6 Mega II
+// cycles of border each side) in every mode, and Super Hi-Res at 16 dots per
+// cycle so its 640 pixels fill the same 40 cycles as the 560 Apple II dots.
+reg [1:0] shrg_s;
+always @(posedge CLK_VIDEO) shrg_s <= {shrg_s[0], iigs_shrg};
+wire        geo_ce, geo_hs, geo_vs, geo_hb, geo_vb;
+wire [23:0] geo_rgb;
+video_geom video_geom
+(
+	.clk(CLK_VIDEO),
+	.ce_in(mix_ce),
+	.rgb_in({mix_r, mix_g, mix_b}),
+	.hs_in(mix_hs),
+	.vs_in(mix_vs),
+	.hb_in(mix_hb),
+	.vb_in(mix_vb),
+	.shr_in(shrg_s[1]),
+	.stretch_en(1'b1),
+	.ce_out(geo_ce),
+	.rgb_out(geo_rgb),
+	.hs_out(geo_hs),
+	.vs_out(geo_vs),
+	.hb_out(geo_hb),
+	.vb_out(geo_vb),
+	.shr_frame(shr_frame)
+);
+
+video_mixer #(.LINE_LENGTH(832), .GAMMA(1)) video_mixer
+(
+	.CLK_VIDEO(CLK_VIDEO),
+	.CE_PIXEL(CE_PIXEL),
+	.ce_pix(geo_ce),
+	.scandoubler(scandoubler),
+	.hq2x(sfx == 3'd1),
+	.gamma_bus(gamma_bus),
+	.R(geo_rgb[23:16]),
+	.G(geo_rgb[15:8]),
+	.B(geo_rgb[7:0]),
+	.HSync(geo_hs),
+	.VSync(geo_vs),
+	.HBlank(geo_hb),
+	.VBlank(geo_vb),
+	.HDMI_FREEZE(1'b0),
+	.freeze_sync(),
+	.VGA_R(VGA_R),
+	.VGA_G(VGA_G),
+	.VGA_B(VGA_B),
+	.VGA_VS(VGA_VS),
+	.VGA_HS(VGA_HS),
+	.VGA_DE(mix_de)
+);
 
 
 

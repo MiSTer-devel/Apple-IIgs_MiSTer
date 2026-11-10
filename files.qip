@@ -34,6 +34,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/uthernet2.sv
 # --- Video ---
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/vgc.v
 set_global_assignment -name VERILOG_FILE rtl/video_timing.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video_geom.sv
 
 # --- Sound ---
 set_global_assignment -name VERILOG_FILE rtl/sound.v
