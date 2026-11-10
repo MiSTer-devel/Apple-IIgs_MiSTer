@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-11-10 (`releases/Apple-IIgs_20261110.rbf`)
+
+### Video
+- New OSD → Video page with Aspect ratio (moved from the main menu, same setting), Scale (Normal, V-Integer, Narrower/Wider HV-Integer) and Vertical crop (Off, 216p(5x)), using the MiSTer `video_freak` module. Requested by Vanfanel.
+  - Original aspect is now the measured shape of the frame: 13:10 NTSC, 481:372 PAL (was a fixed 4:3).
+  - At 1080p the 216-line crop gives a 5× NTSC picture that fills the screen height and removes only border. A PAL frame (LANGSEL bit 4) crops to 270 lines instead (4×), so no picture lines are lost.
+- Scandoubler Fx (None, HQ2x, CRT 25/50/75%) on the same page, through the MiSTer `video_mixer`. The core now honours `forced_scandoubler=1` (31 kHz VGA monitors get a doubled picture instead of raw 15 kHz) and MiSTer gamma tables.
+  - The mixer and scaler run on a 114.55 MHz video clock (8× the 14.318 MHz pixel, 7× the 16.36 MHz Super Hi-Res pixel). The VGC itself still runs at 28.6 MHz; its pixels cross on the same PLL.
+- Text, lo-res and Hi-Res now line up (#4). Hi-Res and colour Double Hi-Res sat 4 pixels right of text, so mixed screens and text-to-graphics changes (Total Replay splash screens, Prince of Persia) jumped sideways. Hi-Res stays put; text, lo-res and the IIe border are delayed 4 pixels and mono Double Hi-Res 6, so every Apple II mode starts at the same place. Display only: the video fetch, the floating bus and Super Hi-Res are unchanged.
+- Every mode is centred, and the border is the same width in every mode, as on hardware (6 Mega II cycles each side of the 40-cycle picture; MAME's apple2gs notes, GSSquared). Before, Super Hi-Res filled 640 of the 744 dots with 45/60-dot borders and the Apple II modes 560 with 89/95, so the picture changed width and jumped sideways on a mode switch.
+  - The VGC centres its picture with a short display-only delay on the finished pixels (7 in Super Hi-Res, 3 in the Apple II modes).
+  - A new `rtl/video_geom.sv` replays each line from a one-line buffer into a 728-dot window (84-dot borders). Super Hi-Res frames go out at 16.36 MHz, 16 pixels per cycle like the real VGC, so 640 pixels fill the same 40 cycles as 560 Apple II dots: 832 × 240 against 728 × 240. Sync timing is the same in both. The scaler sees a new width when a program changes mode, which can cost a frame.
+  - Every Super Hi-Res pixel is exactly 7 video clocks, so Scandoubler Fx, HQ2x, gamma and `forced_scandoubler=1` work in every mode, and analog output has even pixels.
+- Super Hi-Res shows all 640 pixels. The output stage started the right border one pixel early and hid pixel 639 on every line.
+
+### Keyboard
+- Keys typed faster than a program reads them no longer come out wrong. Each new key went straight into the $C000 key register even with older keys still waiting in the type-ahead buffer, so the unread key was lost and the new one read twice ("PR" typed fast read as "RR"). Buffered keys also took their Shift/Control state from the moment they were read rather than when they were typed.
+
+### Testing
+- vsim: `--twgs` selects the TransWarp GS card, and `--disk-mount-frame N` mounts the `--disk` HDD at frame N (to model an MGL mounting after the ROM starts).
+- `regression.sh` has an 11th test: GS/OS with the TransWarp GS card opens the CDA menu and checks the card's "TransWarp GS" CDA is listed. The other images were updated for the centred picture; the MMU test uses a rebuilt `mmu_test.2mg`.
+- FPGA build: Quartus 17.0, worst setup slack +0.348 ns, worst hold slack +0.250 ns.
+- DE10-Nano: a 232-disk 3.5" burn-in (same RTL) gave 185 pass, 44 partial and 3 fail, against 163/60/9 for the previous build. The few titles that scored lower were rechecked and none were regressions. Hand-tested: GS/OS typing, fast typing in Total Replay, VGA output and the OSD Video page.
+
 ## 2026-11-08 (`releases/Apple-IIgs_20261108.rbf`)
 
 ### MiSTer framework

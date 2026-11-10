@@ -57,6 +57,7 @@ module iigs
   output VBlank,
   output HS,
   output VS,
+  output SHRG,       // NEWVIDEO[7]: Super Hi-Res on (for the MiSTer video_geom stage)
 
   output [15:0] AUDIO_L,
   output [15:0] AUDIO_R,
@@ -300,6 +301,7 @@ module iigs
    logic       EIGHTYCOL/*verilator public_flat*/;
    logic       AN3/*verilator public_flat*/;
    logic [7:0] NEWVIDEO/*verilator public_flat*/;
+  assign SHRG = NEWVIDEO[7];
    logic IO/*verilator public_flat*/;
    logic slow/*verilator public_flat*/;
    logic slowMem/*verilator public_flat*/;

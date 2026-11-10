@@ -25,8 +25,12 @@ This repository contains a Verilog recreation of the Apple IIGS computer for the
   - Cycle-exact Floating Bus ("vaporlock") implementation for legacy software compatibility.
   - Color-accurate 16-color Double Hi-Res (DHR) decoding with AppleColor RGB decode, honoring the NEWVIDEO[5] monochrome toggle.
   - Fixed horizontal first-byte truncation for pixel-perfect Double Hi-Res rendering.
-  - PAL (50Hz) and NTSC (60Hz) display standard support (PAL scanline timings selected via LANGSEL register bit 4).
-  - Adjustable aspect ratio via OSD (Original 4:3 vs. Full Screen).
+  - PAL (50Hz) and NTSC (60Hz) display timing (PAL scanline timings selected via LANGSEL register bit 4; see "50 Hz (PAL)" below).
+  - OSD → Video: Aspect ratio (Original, Full Screen, ARC1/ARC2), Scale (Normal, V-Integer, Narrower/Wider HV-Integer), Vertical crop (Off, 216p(5x)) and Scandoubler Fx (None, HQ2x, CRT 25/50/75%). These change the picture at once, with no reset.
+    - The picture has the real IIgs border: 6 Mega II cycles each side of the 40-cycle picture, the same in every mode. The Apple II modes are sent as 728 × 240 (NTSC) or 728 × 290 (PAL) at 14.318 MHz; Super Hi-Res as 832 × 240/290 at 16.36 MHz (16 pixels per cycle, as on hardware), so the border doesn't change width when a program switches modes. Original is the true shape: 13:10 for NTSC and 481:372 for PAL.
+    - The scandoubler also turns on with `forced_scandoubler=1` in MiSTer.ini (31 kHz VGA monitors), and MiSTer.ini / OSD gamma tables apply.
+    - On HDMI, leave Scandoubler Fx at None for the biggest integer picture: the scaler sees the doubled 480 lines, so V-Integer at 1080p drops from 4× to 2×, and Vertical crop is off.
+    - Vertical crop works on 1080p HDMI. NTSC keeps 216 of the 240 lines, so V-Integer goes from 4× to 5× and only border is removed. PAL keeps 270 of 290 lines (3× to 4×), because 216 lines would cut the picture.
 - **Audio Subsystem**:
   - Stereo audio output.
   - Accurate emulation of the Ensoniq ES5503 Digital Oscillator Chip (DOC) sound generator with 32 oscillators and 64KB dedicated sound RAM.
@@ -146,20 +150,12 @@ incompatible PRAM layouts and each gets its own block. A zero-filled file is
 expected: the ROM's PRAM checksum fails on a blank block and the firmware simply
 re-defaults itself, so a fresh file cannot brick anything.
 
-### How to: run at 50 Hz (PAL)
+### 50 Hz (PAL)
 
-There is no OSD option for the video standard, because the IIgs keeps it in
-PRAM like a real machine. The firmware reads it at every boot and sets
-LANGSEL (`$C02B`) bit 4, which switches the core to 312-line 50 Hz timing.
-
-1. Mount `Apple-IIgs.RAM` as described above, so the setting is kept.
-2. Open the Control Panel: press **Ctrl+OpenApple+Esc** (Alt is OpenApple)
-   and choose **Control Panel**.
-3. Go to **Display** and set **Hertz** to **50**. Leave the Control Panel.
-4. Use **Save NVRAM** in the OSD, then reset.
-
-To go back to 60 Hz, set **Hertz** to **60** the same way and save again.
-ROM 01 and ROM 3 keep separate PRAM, so set it on each ROM you use.
+The core has the PAL 312-line 50 Hz timing, selected by LANGSEL (`$C02B`)
+bit 4, which software can set. On a real IIgs the ROM sets it from the Control
+Panel's Hertz setting, but on this core the ROM 3 Control Panel shows Hertz
+without letting you change it, so there is no menu option for 50 Hz yet.
 
 ## Development & Simulation
 

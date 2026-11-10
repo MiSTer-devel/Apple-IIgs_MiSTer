@@ -65,6 +65,9 @@ module emu (
         // Sim-only: cross-wire SCC channels as an external serial loopback cable
         input serial_loopback,
 
+        // Sim-only (--twgs): OSD Accelerator > Card = TransWarp GS instead of ZipGS
+        input twgs_card,
+
         // Sim-only serial tap (--serial-port / --serial-out): OSD Serial Port
         // selector (0=Modem/ch B, 1=Printer/ch A) and the resulting MiSTer UART
         // TX pin, decoded to a file by sim_main.cpp
@@ -385,7 +388,7 @@ iigs  iigs(
         .serial_port_printer(serial_port_printer),
         .host_speed(host_speed),
         .accel_capable(1'b1),  // sim fast RAM is single-cycle BRAM: all speed steps safe
-        .zip_regs_en(1'b1),    // ZipGS software interface always present in sim
+        .zip_regs_en(~twgs_card), // ZipGS interface unless --twgs picks the TransWarp GS card
         // OSD delay-toggle views: match the zipgs_regs power-on values so no
         // edge-apply fires (delays enabled, CPS off = the old "Auto" behavior)
         .osd_spkr_delay(1'b1),
@@ -407,7 +410,7 @@ iigs  iigs(
         .nv_wr(1'b0),
         .nv_din(8'd0),
         .nv_dout(),
-        .twgs_present(1'b0),   // TWGS card off by default (flip to 1'b1 to test detection)
+        .twgs_present(twgs_card), // --twgs: TransWarp GS card (detection ROM, latch, CDA)
         // Detection verified 2026-07-11: with 1'b1, monitor `BC/FF00.FF0F` shows
         // 'TWGS''SMJS' + the JML table (54 57 47 53 53 4D 4A 53 / 5C 28 FB BC ...)
         .accel_active(accel_active_w),  // selects registered vs comb fastram read (as on FPGA)

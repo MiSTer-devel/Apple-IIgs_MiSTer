@@ -1059,14 +1059,21 @@ always @(posedge CLK_14M) begin
             // have temp_iie_char == 0xFF and shouldn't waste FIFO slots.
             if (temp_iie_char != 8'hFF &&
                 kbd_fifo_count < MAX_KBD_BUF[3:0]) begin
-              kbd_fifo[kbd_fifo_head[2:0]] <= temp_apple_key;
+              // The FIFO holds the ASCII made with the modifiers as they
+              // were at the key press (not at the later $C010 pop).
+              kbd_fifo[kbd_fifo_head[2:0]] <= temp_iie_char;
               kbd_fifo_head <= (kbd_fifo_head + 4'd1) & 4'd7;  // MAX_KBD_BUF-1 mask
               kbd_fifo_count <= kbd_fifo_count + 4'd1;
 
 `ifdef DEBUG_ADB
               $display("ADB: Setting K register: PS2=%03h Apple=%02h ASCII=%02h", ps2_key[8:0], temp_apple_key, temp_iie_char);
 `endif
-              K <= {1'b1, temp_iie_char[6:0]};  // Set strobe bit + 7-bit ASCII
+              // K shows the oldest unread key. Only an empty FIFO puts the
+              // new key straight into K; otherwise $C010 loads it in turn.
+              // (Loading it at once lost the unread key and repeated this
+              // one: "PR" typed fast read as "RR".)
+              if (kbd_fifo_count == 4'd0)
+                K <= {1'b1, temp_iie_char[6:0]};  // Set strobe bit + 7-bit ASCII
             end
           end else begin
             // Key released
@@ -2177,12 +2184,9 @@ always @(posedge CLK_14M) begin
 
             // Load next character if available (kbd_fifo_count > 1 means there's another after this one)
             if (kbd_fifo_count > 1) begin
-              // Convert next FIFO entry to Apple IIe ASCII
+              // Next FIFO entry (already Apple IIe ASCII)
               reg [7:0] next_char;
-              next_char = adb_to_apple_iie_ascii(
-                kbd_fifo[(kbd_fifo_tail + 1) % MAX_KBD_BUF][6:0],
-                shift_down, ctrl_down, caps_lock_state
-              );
+              next_char = kbd_fifo[(kbd_fifo_tail + 1) % MAX_KBD_BUF];
 
               // Load next character - duplicates are allowed (e.g., "tt")
               K <= {1'b1, next_char[6:0]};
